@@ -252,6 +252,52 @@ class CouncilFlowTests(unittest.TestCase):
         )
         self.assertFalse(any("--jinja" in item.text for item in memory.pending()))
 
+    def test_a_disputed_automatic_council_answer_never_becomes_a_pending_lesson(self):
+        memory = MemoryStore(self.root / ".offgrid" / "memory.db")
+        self.addCleanup(memory.close)
+        council = StubCouncil(
+            answers=[
+                Answer(member="peer", text=ANSWERED),
+                Answer(
+                    member="skeptic",
+                    text="I don't know; check the server version first.",
+                ),
+            ]
+        )
+        team = self.team(
+            [
+                when("planner", text(json.dumps(PLAN))),
+                when("coder", text(IGNORANT)),
+                when("coder", text(ANSWERED)),
+                when("reviewer", text(APPROVE)),
+                when("lead", text("Added JSON mode, flag choice disputed.")),
+                when("archivist", text('{"lessons": []}')),
+            ],
+            council,
+            memory=memory,
+            verify_command="python3 -c pass",
+        )
+        result = team.run("add JSON mode")
+
+        self.assertTrue(result.verify_ok)
+        self.assertEqual(len(council.questions), 1)
+        self.assertEqual(len(result.council), 1)
+        record = result.council[0]
+        self.assertEqual(record["trigger"], "auto")
+        self.assertTrue(record["disagreement"])
+        self.assertIn("do not agree", record["answer"])
+        self.assertIn("don't know", council.questions[0])
+
+        council_lessons = [
+            item for item in result.pending_lessons if item["source"].startswith("council")
+        ]
+        self.assertEqual(council_lessons, [])
+        self.assertEqual(
+            [item for item in memory.pending() if item.source.startswith("council")],
+            [],
+        )
+        self.assertFalse(any("--jinja" in item.text for item in memory.pending()))
+
     def test_the_consult_is_written_to_the_session_log(self):
         council = StubCouncil()
         team = self.team(
