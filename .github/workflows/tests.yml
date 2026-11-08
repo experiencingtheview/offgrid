@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run all tests
+        run: python3 -m unittest discover -s tests -t .
