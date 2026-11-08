@@ -103,10 +103,90 @@ jobs:
           offgrid-launch --version
           python -c "from offgrid._bundle import assets_root; raise SystemExit(0 if assets_root() else 1)"
 
+  windows_desktop:
+    name: Desktop shortcut on Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Create, inspect and remove a real .lnk
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $desktopDir = Join-Path $env:RUNNER_TEMP 'offgrid-desktop-shortcut'
+          $workDir = Join-Path $env:RUNNER_TEMP 'offgrid-shortcut-work'
+          New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+
+          $probe = python -c "import sys; from pathlib import Path; print(sys.executable); print(Path.home())"
+          if ($LASTEXITCODE -ne 0 -or $probe.Count -ne 2) {
+            throw 'could not read the Python executable and home directory'
+          }
+          $expectedTarget = ([IO.Path]::GetFullPath($probe[0].Trim())).TrimEnd('\')
+          $expectedWorkDir = ([IO.Path]::GetFullPath($probe[1].Trim())).TrimEnd('\')
+          $expectedShortcut = Join-Path $desktopDir 'OffGrid.lnk'
+
+          Push-Location $workDir
+          try {
+            $installJson = offgrid desktop install --desktop $desktopDir --json
+            if ($LASTEXITCODE -ne 0) { throw 'offgrid desktop install failed' }
+            $installed = $installJson | ConvertFrom-Json
+            if ($installed.ok -ne $true) { throw 'install did not report success' }
+            if ($installed.path -ne $expectedShortcut) {
+              throw "install reported the wrong path: $($installed.path)"
+            }
+            if (-not (Test-Path -LiteralPath $expectedShortcut -PathType Leaf)) {
+              throw "shortcut was not created: $expectedShortcut"
+            }
+
+            $shell = New-Object -ComObject WScript.Shell
+            $link = $shell.CreateShortcut($expectedShortcut)
+            $actualTarget = ([IO.Path]::GetFullPath($link.TargetPath)).TrimEnd('\')
+            $actualWorkDir = ([IO.Path]::GetFullPath($link.WorkingDirectory)).TrimEnd('\')
+            if ($actualTarget -ne $expectedTarget) {
+              throw "wrong target: $actualTarget (expected $expectedTarget)"
+            }
+            if ($link.Arguments -ne '-m offgrid chat') {
+              throw "wrong arguments: $($link.Arguments)"
+            }
+            if ($actualWorkDir -ne $expectedWorkDir) {
+              throw "wrong working directory: $actualWorkDir (expected $expectedWorkDir)"
+            }
+            if ($link.Description -ne 'OffGrid offline coding team') {
+              throw "wrong description: $($link.Description)"
+            }
+
+            $pathJson = offgrid desktop path --desktop $desktopDir --json
+            if ($LASTEXITCODE -ne 0) { throw 'offgrid desktop path failed' }
+            $found = $pathJson | ConvertFrom-Json
+            if ($found.path -ne $expectedShortcut -or $found.exists -ne $true) {
+              throw 'desktop path did not report the installed shortcut'
+            }
+
+            $removeJson = offgrid desktop remove --desktop $desktopDir --json
+            if ($LASTEXITCODE -ne 0) { throw 'offgrid desktop remove failed' }
+            $removed = $removeJson | ConvertFrom-Json
+            if ($removed.removed -ne $true) { throw 'remove did not report the shortcut' }
+            if (Test-Path -LiteralPath $expectedShortcut) {
+              throw "shortcut still exists after removal: $expectedShortcut"
+            }
+          } finally {
+            Pop-Location
+          }
+
   badge:
     name: Publish public CI status
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, package, platform-smoke]
+    needs: [test, package, platform-smoke, windows_desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -118,8 +198,9 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           PLATFORM_RESULT: ${{ needs.platform-smoke.result }}
+          WINDOWS_DESKTOP_RESULT: ${{ needs.windows_desktop.result }}
         run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ]; then
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ]; then
             result=passing
           else
             result=failing
