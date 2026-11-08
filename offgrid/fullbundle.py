@@ -4,7 +4,7 @@ It downloads, once, while you still have internet:
 
   1. a portable CPython (so the target machine needs nothing installed)
   2. a llama.cpp release for this platform (the local model server)
-  3. a quantised Qwen2.5-Coder GGUF (the brain)
+  3. a quantised open-weight GGUF model (the brain)
 
 ...then writes launchers and a config, so the target laptop needs no network,
 no install, no account. ``scripts/setup_usb.py`` is the standalone entry point;
@@ -16,6 +16,7 @@ Everything is stdlib. Run it again later and finished files are skipped.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -32,14 +33,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from ._bundle import assets_root as _assets_dir, package_root
+from .hardware import ram_gb as _detected_ram_gb
+
 UA = "offgrid-setup/0.1 (+https://example.invalid)"
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PORT = 8089
+FREE_SPACE_MARGIN_GB = 1.0
 
 MODELS: Dict[str, Dict[str, object]] = {
     "3b": {
         "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
         "file": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+        "sha256": "3da3afe6cf5c674ac195803ea0dd6fee7e1c228c2105c1ce8c66890d1d4ab460",
         "gb": 2.0,
         "ram": "6 GB",
         "note": "smallest useful option; fine for scripts and single files",
@@ -47,6 +52,7 @@ MODELS: Dict[str, Dict[str, object]] = {
     "7b": {
         "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
         "file": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        "sha256": "1664fccab734674a50763490a8c6931b70e3f2f8ec10031b54806d30e5f956b6",
         "gb": 4.7,
         "ram": "10 GB",
         "note": "recommended default; good at multi-file edits and tool calls",
@@ -54,9 +60,34 @@ MODELS: Dict[str, Dict[str, object]] = {
     "14b": {
         "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
         "file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+        "sha256": "2946d28c9e1bb2bcae6d42e8678863a31775df6f740315c7d7e6d6b6411f5937",
         "gb": 9.0,
         "ram": "20 GB",
         "note": "noticeably better plans and reviews, needs a big machine",
+    },
+    "35b": {
+        "repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+        "file": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        "sha256": "f4ffe03c9139e6a905a5d346f77d9fabdd179367c3280dfd005d1e75ca5ed8c8",
+        "gb": 20.5,
+        "ram": "32 GB",
+        "note": (
+            "high-end option: 35B total with ~3B active (MoE), "
+            "Apache-2.0; needs a 32 GB machine and a fast disk"
+        ),
+    },
+    "80b": {
+        "repo": "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF",
+        "file": "Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf",
+        "sha256": "d103b2733ec1012a52d01edda66b7e5c24ae50508c9f99f5297ea459ef3c061a",
+        "gb": 48.4,
+        "ram": "64 GB minimum (96 GB recommended)",
+        "min_ram_gb": 64,
+        "recommended_ram_gb": 96,
+        "note": (
+            "opt-in maximum: 80B total with ~3B active (MoE), Apache-2.0; "
+            "needs 64 GB+ RAM and a very fast disk"
+        ),
     },
 }
 
@@ -108,9 +139,52 @@ def fetch_json(url: str, timeout: int = 30):
         return json.loads(response.read().decode("utf-8"))
 
 
-def download(url: str, dest: Path, timeout: int = 120) -> None:
-    """Resumable download with a progress line. Skips files already complete."""
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_download(path: Path, expected_sha256: str) -> None:
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        return
+    actual = _sha256_file(path).lower()
+    if actual != expected:
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass
+        raise OSError(
+            f"SHA-256 mismatch for {Path(path).name}: expected {expected}, got {actual}; "
+            "the download was deleted"
+        )
+
+
+def download(
+    url: str,
+    dest: Path,
+    timeout: int = 120,
+    expected_sha256: str = "",
+) -> None:
+    """Resumable download with a progress line and optional SHA-256 check."""
+    dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    expected = (expected_sha256 or "").strip().lower()
+    if dest.is_file():
+        if expected:
+            try:
+                if _sha256_file(dest).lower() == expected:
+                    print(f"  already downloaded and verified: {dest.name}")
+                    return
+            except OSError:
+                pass
+        elif dest.stat().st_size > 0:
+            print(f"  already downloaded: {dest.name}")
+            return
+
     part = dest.with_name(dest.name + ".part")
     resume = part.stat().st_size if part.is_file() else 0
     headers = {"User-Agent": UA}
@@ -122,6 +196,7 @@ def download(url: str, dest: Path, timeout: int = 120) -> None:
     except urllib.error.HTTPError as exc:
         if exc.code == 416:  # already complete
             part.replace(dest)
+            _verify_download(dest, expected)
             print(f"  already downloaded: {dest.name}")
             return
         raise
@@ -150,6 +225,7 @@ def download(url: str, dest: Path, timeout: int = 120) -> None:
                     sys.stderr.flush()
     sys.stderr.write("\n")
     part.replace(dest)
+    _verify_download(dest, expected)
 
 
 def flatten_binary_dir(root: Path, binary: str) -> Optional[Path]:
@@ -333,10 +409,32 @@ def copy_tree(source: Path, destination: Path) -> None:
     )
 
 
-def write_launchers(target: Path, os_name: str) -> None:
+def _source_root() -> Path:
+    """The directory containing the importable package (checkout or wheel)."""
+    root = package_root()
+    if root is None:
+        raise FullBundleError(
+            "run the full-bundle builder from an OffGrid source tree, a wheel install, "
+            "or an unpacked bundle"
+        )
+    return root
+
+
+def _assets_root() -> Path:
+    root = _assets_dir()
+    if root is None:
+        raise FullBundleError(
+            "bundle assets are missing from this installation; reinstall OffGrid "
+            "from a wheel or use a source checkout"
+        )
+    return root
+
+
+def write_launchers(target: Path, os_name: str, assets: Optional[Path] = None) -> None:
     launch_dir = target / "launch"
     launch_dir.mkdir(parents=True, exist_ok=True)
-    for source in (REPO_ROOT / "launch").glob("*"):
+    assets = Path(assets) if assets is not None else _assets_root()
+    for source in (assets / "launch").glob("*"):
         if source.is_file():
             shutil.copy2(source, launch_dir / source.name)
             make_executable(launch_dir / source.name)
@@ -428,6 +526,84 @@ def estimate_download_gb(model: str) -> float:
     if model not in MODELS:
         raise FullBundleError(f"unknown model '{model}'; choose from: {', '.join(MODELS)}")
     return 0.35 + 0.06 + 0.15 + float(MODELS[model]["gb"])
+
+
+def estimate_required_space_gb(
+    model: str,
+    *,
+    skip_python: bool = False,
+    skip_llama: bool = False,
+    skip_model: bool = False,
+) -> float:
+    """Space to reserve for a build, including filesystem headroom."""
+    if model not in MODELS:
+        raise FullBundleError(f"unknown model '{model}'; choose from: {', '.join(MODELS)}")
+    total = 0.35
+    if not skip_python:
+        total += 0.06
+    if not skip_llama:
+        total += 0.15
+    if not skip_model:
+        total += float(MODELS[model]["gb"])
+    return round(total + FREE_SPACE_MARGIN_GB, 1)
+
+
+def free_space_gb(path: Path) -> Optional[float]:
+    """Free space at *path* or its nearest existing parent, or None if unknown."""
+    probe = Path(path).expanduser()
+    try:
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        return round(shutil.disk_usage(probe).free / (1024 ** 3), 1)
+    except OSError:
+        return None
+
+
+def ensure_free_space(target: Path, required_gb: float) -> None:
+    """Refuse a build before downloading when the target is too small."""
+    free = free_space_gb(target)
+    if free is None:
+        print(
+            f"  warning: could not check free space for {target}; "
+            f"need about {required_gb:.1f} GB"
+        )
+        return
+    if free < required_gb:
+        raise FullBundleError(
+            f"not enough free space for {target}: need about {required_gb:.1f} GB, "
+            f"have {free:.1f} GB"
+        )
+
+
+def ram_warning(model: str, available_gb: Optional[float] = None) -> str:
+    """A warning when a model's minimum RAM exceeds this machine."""
+    spec = MODELS.get(model)
+    if not spec:
+        return ""
+    minimum = float(spec.get("min_ram_gb") or 0.0)
+    if minimum <= 0:
+        return ""
+    recommended = spec.get("recommended_ram_gb")
+    need = f"{minimum:g} GB minimum"
+    if recommended:
+        need += f" ({float(recommended):g} GB recommended)"
+    if available_gb is None:
+        try:
+            available_gb = float(_detected_ram_gb())
+        except Exception:
+            available_gb = 0.0
+    if available_gb is None or available_gb <= 0:
+        return (
+            f"{model} wants {need} RAM; RAM could not be detected. "
+            "Use it only on a machine with enough memory."
+        )
+    if available_gb + 0.05 < minimum:
+        return (
+            f"{model} wants {need} RAM; this machine has {available_gb:.1f} GB. "
+            "It may run only by paging weights from disk, which is very slow; "
+            "choose 35b or a smaller model, or add RAM."
+        )
+    return ""
 
 
 def missing_components(
@@ -554,8 +730,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("  OffGrid bundle builder")
     print(f"  platform  {os_name}/{arch}")
     print(f"  target    {target}")
-    print(f"  model     {args.model} (about {MODELS[args.model]['gb']} GB, wants ~{MODELS[args.model]['ram']} RAM)")
+    print(f"  model     {args.model} (about {MODELS[args.model]['gb']} GB; RAM: {MODELS[args.model]['ram']})")
+    if not args.skip_model:
+        warning = ram_warning(args.model)
+        if warning:
+            print(f"  warning: {warning}")
     print()
+
+    required_space = estimate_required_space_gb(
+        args.model,
+        skip_python=args.skip_python,
+        skip_llama=args.skip_llama,
+        skip_model=args.skip_model,
+    )
+    if not args.dry_run:
+        try:
+            ensure_free_space(target, required_space)
+        except FullBundleError as exc:
+            print(f"  {exc}")
+            print("  choose another target or free space, then retry")
+            return 1
 
     if args.llama_url:
         archive_name = os.path.basename(args.llama_url.split("?")[0]) or "llama-archive.zip"
@@ -585,17 +779,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     target.mkdir(parents=True, exist_ok=True)
+    source_root = _source_root()
+    bundle_assets = _assets_root()
     plan: List[str] = []
 
     # 1. the agent itself
-    copy_tree(REPO_ROOT / "offgrid", target / "offgrid")
-    if (REPO_ROOT / "tests").is_dir():
-        copy_tree(REPO_ROOT / "tests", target / "tests")
+    copy_tree(source_root / "offgrid", target / "offgrid")
+    if (source_root / "tests").is_dir():
+        copy_tree(source_root / "tests", target / "tests")
     for name in ("pyproject.toml", "README.md", "LICENSE"):
-        source = REPO_ROOT / name
+        source = bundle_assets / name
         if source.is_file():
             shutil.copy2(source, target / name)
-    write_launchers(target, os_name)
+    write_launchers(target, os_name, bundle_assets)
     plan.append("offgrid/            the agent package (pure stdlib)")
     plan.append("launch/             start scripts for sh, .bat and .command")
 
@@ -649,9 +845,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if model:
         url, name, spec = model
         archive = downloads / name
-        print(f"  downloading {name} ({spec['gb']} GB, resumable)...")
+        print(f"  downloading {name} ({spec['gb']} GB, resumable, SHA-256 checked)...")
         try:
-            download(url, archive)
+            download(
+                url,
+                archive,
+                expected_sha256=str(spec.get("sha256") or ""),
+            )
             models_dir = target / "models"
             models_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(str(archive), str(models_dir / name))

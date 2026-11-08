@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from .config import Config
+from .voice import speak as speak_text
 
 
 class _Colors:
@@ -43,6 +44,7 @@ class UI:
         self._spinner_stop = threading.Event()
         self._spinner_thread: Optional[threading.Thread] = None
         self._spinner_quiet = False
+        self._voice_warned = False
 
     # -- primitives ------------------------------------------------------
     def paint(self, text: str, *codes: str) -> str:
@@ -81,6 +83,23 @@ class UI:
         pad = " " * indent
         for line in text.rstrip().splitlines():
             print(pad + line, flush=True)
+
+    def speak(self, text: str) -> None:
+        """Read a final response aloud when --speak is enabled.
+
+        Speech is independent of terminal verbosity, so `--quiet --speak` still
+        reads the answer. A missing engine is reported once, not on every turn.
+        """
+        if not self.config.speak or not text.strip():
+            return
+        try:
+            ok, message = speak_text(text, self.config.voice)
+        except KeyboardInterrupt:
+            self.warn("speech interrupted")
+            return
+        if not ok and not self._voice_warned:
+            self.warn(message)
+            self._voice_warned = True
 
     def info(self, text: str) -> None:
         if self.verbose < 1:

@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from .private import append_private_text, ensure_private_dir
+
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 SKIP_DIRS = {
@@ -393,9 +395,8 @@ def record(path: Path, findings: Sequence[Finding], source: str = "run") -> None
         "findings": [finding.as_dict() for finding in findings[:40]],
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        ensure_private_dir(path.parent)
+        append_private_text(path, json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
 

@@ -350,7 +350,9 @@ def probe(workspace: str = ".", refresh: bool = False) -> Capability:
     raw = observe(workspace)
     capability = classify(raw)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from .private import ensure_private_dir, harden_file
+
+        ensure_private_dir(path.parent)
         path.write_text(
             json.dumps(
                 {"checked": time.time(), "fingerprint": fingerprint(raw), "raw": raw},
@@ -358,6 +360,7 @@ def probe(workspace: str = ".", refresh: bool = False) -> Capability:
             ),
             encoding="utf-8",
         )
+        harden_file(path)
     except OSError:
         pass  # a read-only USB stick still works, it just re-probes
     return capability

@@ -61,6 +61,7 @@ The interesting part is not the model — it is the **orchestration**. A 7B mode
 | **Carries knowledge** | offline library of survival, medicine and coding references it can search |
 | **Admits ignorance** | the honesty rule is in every prompt, every tool and the test suite |
 | **Portable** | pure Python 3.9+ standard library; build a USB bundle with a bundled runtime and model |
+| **Speaks** | final reports read aloud through the voice already on your machine; no cloud TTS |
 | **Safe-ish** | writes confined to the workspace, destructive commands refused or gated, shell policy per run |
 
 ---
@@ -103,7 +104,7 @@ Build once, on a machine with internet:
 python3 scripts/setup_usb.py --target /media/USB/offgrid --model 7b
 ```
 
-It downloads a portable CPython, a llama.cpp build for the current platform and a quantised Qwen2.5-Coder GGUF (~5.3 GB total), then writes launchers. Unplug, carry it, and on the target machine:
+It downloads a portable CPython, a llama.cpp build for the current platform and a quantised Qwen2.5-Coder GGUF (about 5.3 GB total for 7B; the 35B option is about 23 GB), then writes launchers. Unplug, carry it, and on the target machine:
 
 ```console
 ./launch/offgrid.sh chat          # Linux
@@ -119,10 +120,13 @@ Preview the download plan without fetching anything:
 python3 scripts/setup_usb.py --dry-run --model 3b
 ```
 
-The same full bundle is available from the distribution wizard. Choose option **4**, select the mounted USB directory, choose a folder on it, then choose `3b`, `7b` or `14b`. The wizard checks free space and refuses to write into a system directory, your home directory or a raw block device:
+The same full bundle is available from the distribution wizard. Choose option **4**, select the mounted USB directory, choose a folder on it, then choose `3b`, `7b`, `14b`, `35b` or the opt-in `80b`. The wizard checks free space, warns below the model's RAM minimum and refuses to write into a system directory, your home directory or a raw block device. Use `offgrid distribute --check-drive PATH --bundle BUNDLE` to verify the filesystem, free space and model SHA-256 before copying; the `--to` install path runs the same check for mounted device roots. Both accept a built full-bundle directory as well as a portable zip; `--to` checks and copies it in one workflow:
 
 ```console
 python3 -m offgrid.cli distribute --wizard
+python3 -m offgrid.cli distribute --check-drive /media/USB --bundle dist/offgrid-portable.zip
+python3 -m offgrid.cli distribute --to /media/USB --bundle dist/offgrid-portable.zip --yes
+python3 -m offgrid.cli distribute --to /media/USB --bundle /path/to/offgrid-usb --yes
 ```
 
 If upstream has no prebuilt llama.cpp binary for your platform, the standalone builder still finishes, writes the source bundle, and falls back to autodetecting an installed Ollama or LM Studio on the target machine. The wizard is stricter: it reports the missing portable Python, llama.cpp or model as an error instead of calling the result complete. The model weights are always downloaded directly from Hugging Face.
@@ -145,7 +149,7 @@ python3 -m offgrid.cli distribute --list
 python3 -m offgrid.cli distribute --to /media/USB
 ```
 
-`--list` shows mounted directories that may be removable devices. `--to` (alias `--flash`) copies the bundle into the chosen **mounted directory**, asking for confirmation unless `--yes` is given. It deliberately refuses raw block devices such as `/dev/sdb`: this project does not build a bootable operating-system image, and writing one to a disk by guesswork can destroy the wrong drive. Use `--bundle` to choose a specific zip or pyz, and `--dry-run` to see the destination without writing. The wizard's option **4** is the full offline build, including portable Python, llama.cpp and the selected model; options 1–3 handle the small portable app.
+`--list` shows mounted directories that may be removable devices. `--to` (alias `--flash`) copies the bundle into the chosen **mounted directory**, asking for confirmation unless `--yes` is given. It deliberately refuses raw block devices such as `/dev/sdb`: this project does not build a bootable operating-system image, and writing one to a disk by guesswork can destroy the wrong drive. Use `--bundle` to choose a specific zip, pyz, or full-bundle directory, and `--dry-run` to see the destination without writing. A full-bundle directory is copied into a folder named after it under the target; it is checked for exFAT, free space, model SHA-256, `launch/`, and `offgrid/` before any files are written. The wizard's option **2** runs the same drive check before installing a bundle, so a non-exFAT mounted target is refused before anything is copied. The wizard's option **4** is the full offline build, including portable Python, llama.cpp and the selected model; options 1–3 handle the small portable app.
 
 From the single file itself:
 
@@ -161,6 +165,19 @@ pipx install .        # or: pip install --user .
 offgrid doctor
 ```
 
+## A voice, offline
+
+`--speak` reads the final report aloud through a voice already installed on your machine. There is no cloud TTS call, no account and no new Python dependency.
+
+```console
+offgrid run "fix the failing test" --speak
+offgrid chat --speak --voice Samantha
+```
+
+macOS uses `say`; Windows uses SAPI through PowerShell; Linux uses `espeak-ng`, then `espeak`, then `festival`. On Linux install one first (`sudo apt install espeak-ng` on Debian/Ubuntu). `--voice` takes a name that engine understands: `say -v ?` on macOS, `espeak-ng --voices` on Linux, or a Windows voice such as `Microsoft Zira Desktop`.
+
+Only the final report is spoken, so tool calls and intermediate chatter stay quiet. Markdown is reduced to prose, code blocks are skipped, and long reports stop with a spoken note. Set `"speak": true` in configuration or `OFFGRID_SPEAK=1`; `OFFGRID_VOICE` selects the voice. Speech is output only: microphone input would need a local speech-to-text model, which this zero-dependency build does not bundle.
+
 ## Models that work well
 
 Anything on an OpenAI-compatible local endpoint works: llama.cpp, Ollama, LM Studio, vLLM, llama-cpp-python, text-generation-webui.
@@ -170,9 +187,12 @@ Anything on an OpenAI-compatible local endpoint works: llama.cpp, Ollama, LM Stu
 | `qwen2.5-coder:3b` | ~2 GB | 6 GB | fine for one-file changes and quick questions |
 | `qwen2.5-coder:7b` | ~4.7 GB | 10 GB | **default recommendation** — decent plans, reliable tool calls |
 | `qwen2.5-coder:14b` | ~9 GB | 20 GB | noticeably better review and multi-file reasoning |
-| `devstral-small`, `qwen3-coder-30b-a3b` | 12–18 GB | 24 GB+ | best local results if you have the hardware |
+| `Qwen3.6-35B-A3B` (Q4_K_M) | ~20.5 GB | 32 GB | 35B total with ~3B active (MoE), Apache-2.0; strong high-end option |
+| `Qwen3-Next-80B-A3B` (Q4_K_M) | ~48.4 GB | 64 GB min / 96 GB recommended | opt-in 80B total with ~3B active (MoE), Apache-2.0; needs a fast SSD and a high-RAM machine |
 
-Coder-tuned models are strongly preferred: they follow tool schemas and JSON instructions much better than general chat models. On a CPU-only laptop expect roughly 5–12 tokens/second — a multi-step run takes a minute or two, not seconds.
+The full-bundle builder names these `3b`, `7b`, `14b`, `35b` and `80b`; `7b` remains the default. The 35B model is a real, downloadable Qwen3.6 MoE model, not a renamed 7B: it needs a 32 GB machine and a fast disk, and it will be slower on CPU-only hardware. The **80B option is explicit opt-in**: it is not selected automatically, needs at least 64 GB RAM (96 GB recommended) and about 50 GB free, and is much slower when the machine has to page weights from disk.
+
+Coder-tuned models are strongly preferred: they follow tool schemas and JSON instructions much better than general chat models. On a CPU-only laptop expect roughly 5–12 tokens/second for the smaller models — a multi-step run takes a minute or two, not seconds. An 80B model can be far slower and disk-bound on a machine below its RAM recommendation.
 
 Models without native tool calling still work: OffGrid detects the refusal and falls back to a fenced-JSON tool protocol.
 
@@ -181,7 +201,8 @@ Models without native tool calling still work: OffGrid detects the refusal and f
 ```console
 offgrid run "fix the failing login test"     one-shot team run
 offgrid chat                                 interactive session
-offgrid doctor                               model setup, hardware and continuity readiness
+offgrid demo                                 scripted end-to-end demo, no model needed
+offgrid doctor [--strict] [--json]          model setup, hardware and continuity readiness
 offgrid models                               models the server is serving
 offgrid agents                               the team roster
 offgrid memory [list|search|add|forget|stats|review|reject|forgive|rejected] what it remembers
@@ -190,12 +211,17 @@ offgrid council [members|ping|ask]           independent advisors
 offgrid hardware                             what this machine can do, and will run
 offgrid fleet [list|add|remove|ping|scan|serve] use your other devices' power
 offgrid security [review|map|watch|history|plan|encrypt|decrypt] reviews, changes, encryption
+offgrid protect [--kit|--check|--backup PATH|--restore PATH] continuity kit, backups, restore
 offgrid trust                                the promises, and the current posture
 offgrid protect [--kit|--check|--backup PATH] whose side it is on, and a household kit
 offgrid lexicon [--json] [--strict]          the merged meaning vocabulary
-offgrid distribute [--wizard|--build|--list|--to]  build or copy a portable app
+offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
+offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
+offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 offgrid config                               the fully resolved configuration
 ```
+
+`offgrid doctor --json` emits one JSON object instead of the human report. It includes the resolved config, hardware/capacity/effort, fleet and server summaries, continuity checks, and a `lexicon` object with `warnings`, `strict`, and `strict_failed`. The warnings and strict result are also available as top-level `lexicon_warnings`, `strict`, and `strict_failed`, alongside `exit_code`. API keys and fleet tokens are not included.
 
 Useful flags (all subcommands):
 
@@ -219,11 +245,19 @@ Useful flags (all subcommands):
 --council-members   comma list: local, local-model:NAME, pollinations, url:https://host/v1#model
 --no-council-auto   keep the council available to tools, but stop automatic consulting
 --no-security-review skip the automatic security review of changed files
---json              machine-readable result (run only)
+--json              machine-readable result (run, improve and maintain)
+--speak             read the final response aloud (run and chat)
+--voice NAME        system voice for --speak
+--improve-when-idle chat: prepare a pending self-improvement request after a quiet period
+--idle-minutes N    chat: quiet minutes before that pass (default 15)
+--interval N        maintain: seconds between passes (default 3600)
+--improve           maintain: prepare one pending self-improvement request
+--retention-days N  maintain: prune terminal request snapshots older than N days (0 disables)
+--keep N            maintain: keep the newest N terminal requests (default 20)
 -q / -v             quieter / show every tool call
 ```
 
-Inside `chat`: `/diff`, `/files`, `/verify [cmd]`, `/agents`, `/status`, `/quit`.
+Inside `chat`: `/diff`, `/files`, `/verify [cmd]`, `/agents`, `/improve`, `/status`, `/quit`.
 
 Exit code is `0` on success, `1` if verification failed, `2` if no model server answered — so it drops into Makefiles and CI without ceremony.
 
@@ -345,6 +379,7 @@ Rules that are enforced, not just promised:
 - `offgrid fleet scan --json` prints one JSON object instead of the human listing: `counts` for discovered, registered, known and skipped peers, plus a `peers` array with each unique peer's name, URL, measured capabilities, `outcome` (`registered`, `already_registered`, `skipped`, or `error`), `reason`, `reachable` and latency. It never prompts: without `--yes` or `--token` the peer is reported as skipped with the reason, so a script can inspect first and register deliberately. Tokens are never included in the output. `offgrid fleet list --json` and `offgrid fleet ping --json` reuse the same peer object: list reports the last-known state without pinging, while ping checks live reachability and labels each peer `reachable` or `unreachable` with latency and any error;
 - a phone can donate too (Termux + llama.cpp), it just won't be fast;
 - the donating side serves HTTP on `8776` and answers LAN discovery on `8777`; on Windows allow both through the firewall once, and on Termux keep the screen awake;
+- fleet traffic is **cleartext HTTP with a bearer token**, not TLS. Use it only on a trusted private LAN, never forward the port from your router, and treat anyone who can observe the LAN or obtain the token as able to read prompts and answers; the token authenticates peers, it does not encrypt traffic;
 - no internet is involved, and the whole feature is off unless you pass `--fleet` or run `fleet serve`.
 
 Speed is explicitly not the goal: a slow answer from the good machine beats a fast wrong one from the small one, and the orchestrator will wait.
@@ -401,19 +436,112 @@ Review or clean up later:
 $ offgrid memory review                  # step through everything pending
 $ offgrid memory accept 7 9              # or by id
 $ offgrid memory reject 8
+$ offgrid memory forget 8 --dry-run      # preview an active-memory deletion
 $ offgrid memory forgive 3              # remove a ledger record; do not reactivate it
 $ offgrid memory forgive "Always run pytest before the tests"
 $ offgrid memory forgive "test suite before commit"   # exact text first, else search
+$ offgrid memory forgive "test suite before commit" --dry-run   # preview only
 $ offgrid memory edit 7 <new wording>
 $ offgrid memory                        # accepted notes; pending count flagged
 $ offgrid memory rejected               # the rejection ledger
 ```
 
-Rejections are remembered too, but only as a negative record: the text goes into a separate `lesson_rejections` table, not into recall or any prompt as knowledge. The archivist is shown the recent ledger and skips exact, near-identical, or semantically equivalent re-proposals — the same lesson in different words, matched through the offline lexicon and n-gram scorer. The semantic threshold is deliberately above mere topical similarity, so a genuinely new lesson sharing the subject still gets proposed. A deliberately re-added note is allowed if you use `offgrid memory add` yourself.
+`offgrid memory forget ID [ID...]` deletes active-memory rows; add `--dry-run` to preview the same rows before deleting them. Rejections are remembered too, but only as a negative record: the text goes into a separate `lesson_rejections` table, not into recall or any prompt as knowledge. The archivist is shown the recent ledger and skips exact, near-identical, or semantically equivalent re-proposals — the same lesson in different words, matched through the offline lexicon and n-gram scorer. The semantic threshold is deliberately above mere topical similarity, so a genuinely new lesson sharing the subject still gets proposed. A deliberately re-added note is allowed if you use `offgrid memory add` yourself.
 
-If a rejection was a mistake, `offgrid memory forgive ID` removes that record from the ledger. You can also pass the lesson's exact text, or a search query: a normalised exact match is tried first, then the same offline meaning matcher used by recall, and every match is forgiven. Quote the text so the shell keeps it together. Forgiving does **not** put the lesson back into active or pending memory, and it does not make the old text trusted again; it only lifts the ban so the archivist may propose the idea later. If that happens, the new proposal still goes through the normal pending review.
+If a rejection was a mistake, `offgrid memory forgive ID` removes that record from the ledger. You can also pass the lesson's exact text, or a search query: a normalised exact match is tried first, then the same offline meaning matcher used by recall, and every match is forgiven. Before deleting, it prints each matched ledger record, so a broad query is visible rather than silent. Add `--dry-run` to preview those same matches without removing them; it also works with ledger IDs. Quote the text so the shell keeps it together. Forgiving does **not** put the lesson back into active or pending memory, and it does not make the old text trusted again; it only lifts the ban so the archivist may propose the idea later. If that happens, the new proposal still goes through the normal pending review.
 
 `--no-review` skips the end-of-run questions without accepting anything. The archivist may still answer `{"lessons": []}`, its output is schema-validated and noise-filtered, and reflection can never fail a run.
+
+## Improving itself, with your approval
+
+Self-improvement is a proposal workflow, not an autonomous commit. `improve
+propose` runs the normal team against a **private copy** of the project and
+leaves a request under `.offgrid/self-improve/requests/<id>/`. The live tree is
+not touched, including while the model reads the code or runs its review.
+
+```console
+$ offgrid improve propose --task "look for a small bug in the CLI"
+  request 20261108-143012-a1b2c3 [pending]
+  summary ...
+  files:
+    write offgrid/cli.py
+  verify not available in the staging run
+
+$ offgrid improve show 20261108-143012-a1b2c3   # full diff
+$ offgrid improve approve 20261108-143012-a1b2c3
+$ offgrid improve reject 20261108-143012-a1b2c3
+```
+
+`approve` prints the diff and asks you to type `approve`; `--yes` is the
+non-interactive equivalent. It refuses if a live file changed after the proposal
+was made, so the model cannot silently overwrite your later edits. Only the
+files in the request are written.
+
+Every approved request keeps a `before/` snapshot of the files it touches. When
+the command policy allows it, the detected verification command runs after
+applying; if it fails, the snapshot is restored automatically and the request is
+marked `rolled_back`. With `--yes` in a non-interactive shell and the default
+`ask` policy, verification is reported as skipped rather than guessed. To undo a
+successful application later:
+
+```console
+$ offgrid improve restore 20261108-143012-a1b2c3
+$ offgrid improve undo                         # latest applied request
+```
+
+`restore` refuses if you have edited those files since the application unless
+you add `--force`; that flag deliberately discards those later edits. Snapshots
+only cover the files in that request, not the whole repository.
+
+To let the AI look for an improvement while you are away, start chat with:
+
+```console
+$ offgrid chat --improve-when-idle --idle-minutes 15
+```
+
+After the quiet period, it creates a **pending** request and notifies you; it
+never applies it. `/improve` inside chat lists anything waiting. The idle pass
+does not run shell commands in the staging copy, so its verification is either
+unavailable or unproven until you approve it and the live verification runs.
+
+This is still a local model editing its own code. Read the diff before
+approving. The snapshot is recovery for this workflow, not a replacement for
+git or a full backup, and no commit or push is made.
+
+## Self-debug and maintenance on a server
+
+`offgrid maintain` is the long-running companion to chat's idle watcher. It is
+built for a server, systemd service, supervisor, or tmux session where nobody is
+typing at a prompt. Each pass runs deterministic self-debug checks:
+
+- the workspace is a writable directory;
+- `.offgrid` is private and every self-improvement request folder can be read;
+- the local model server answers its health endpoint;
+- the workspace disk has at least 1 GB free.
+
+It then performs limited self-maintenance: it repairs private state directory
+permissions and prunes only **terminal** self-improvement requests (`rejected`,
+`restored`, `rolled_back`) older than the retention window. It always keeps the
+newest 20 terminal requests by default. It never prunes a pending, applied, or
+rollback-failed request, so an applied change that broke something remains
+restorable. Use `--retention-days 0` to disable pruning.
+
+Run it continuously, or add `--once` for cron or a systemd timer:
+
+```console
+$ offgrid maintain --interval 900 --improve
+$ offgrid maintain --once --json
+```
+
+With `--improve`, a fully healthy pass with no pending request prepares one new
+request from the model. It still never applies that request: review it with
+`offgrid improve show ID`, then approve or reject it. If a check fails,
+maintenance reports it and skips the model pass instead of spending time on a
+broken deployment or changing code around the problem.
+
+`--once` exits `1` when a check fails, which makes it useful as a scheduled
+health probe. The continuous form logs one report per pass to stdout (or one
+JSON object per line with `--json`) and stops with Ctrl-C.
 
 ## Matching meaning, not just keywords
 
@@ -440,7 +568,7 @@ Create `.offgrid/lexicon.json` in the project. Groups are merged with the built-
 
 Now asking memory or the offline library for a `receipt` can find a note or document that says `invoice`. Base words also cover simple inflections, so `invoice` matches `invoices`. A word that already belongs to another group is not moved silently: the loader keeps its existing meaning and reports a warning. Missing files are fine; a malformed file falls back to the built-in lexicon, and conflicting words keep their existing meaning, with both cases reported by the CLI. Set `lexicon_file` in `.offgrid.json` (or `OFFGRID_LEXICON`) to use a different path. Memory loads the file next to `memory.db` by default, and the library receives the same merged lexicon.
 
-`offgrid lexicon --strict` turns those warnings into a failing command: it prints the same report and exits `1` if the project file could not be read, contains an invalid group or word, or has a word that conflicts with an existing meaning. A missing project file is still fine, because the built-in lexicon is complete on its own. With `--json` the payload is still printed before the non-zero exit, so CI can record exactly what was wrong.
+`offgrid lexicon --strict` turns those warnings into a failing command: it prints the same report and exits `1` if the project file could not be read, contains an invalid group or word, or has a word that conflicts with an existing meaning. A missing project file is still fine, because the built-in lexicon is complete on its own. With `--json` the payload is still printed before the non-zero exit, so CI can record exactly what was wrong. `offgrid doctor` also reports every project lexicon warning and recommends the strict command, so setup checks surface a broken vocabulary before it quietly changes recall. Add `--strict` to doctor to turn those warnings into exit code `1`.
 
 Inspect exactly what the matcher will see, including the source file and any skipped or conflicting entries:
 
@@ -555,6 +683,8 @@ What "allegiance" means here, concretely:
 
 To make the copy, run `offgrid protect --backup /media/USB` against an existing directory outside the workspace. It copies the continuity kit and one non-empty local model (`.gguf` or `.safetensors`) into that directory, preserving their file names, then writes a standard `SHA256SUMS` manifest with the SHA-256 of each copied file. Verify it later with `offgrid protect --check --backup /media/USB`, or independently with `cd /media/USB && sha256sum -c SHA256SUMS`. An unsigned manifest detects a missing or changed copy; it is not a signature and cannot detect deliberate rehashing. Pass `--sign-key ~/.offgrid-backup.key` when creating a backup to add a `SHA256SUMS.sig` HMAC-SHA256 signature. If the key file does not exist, OffGrid creates a random 32-byte key with mode 0600. Keep it off the backup drive: anyone with the key can re-sign an altered manifest. This detects deliberate tampering when the key is held separately, but it is symmetric authentication, not a public-key identity signature. Verify with `offgrid protect --check --backup /media/USB --sign-key ~/.offgrid-backup.key`; the command refuses a signed backup unless its signature verifies. The unsigned workflow is unchanged. An existing signed backup must be re-signed with the key; `--force` will not silently remove its signature. The command refuses to overwrite existing copies or a manifest unless you add `--force`, refuses destinations inside the workspace, and preflights both source files before writing. A path cannot prove a drive is physically off this machine; confirm that yourself and keep another copy elsewhere. Use `--out PATH` to choose a kit other than `.offgrid/continuity.md` as the source, and `--json` for a machine-readable report that includes the manifest and signature paths.
 
+Restore the pair after a machine loss with `offgrid protect --restore /media/USB --workspace /path/to/project`. The restore verifies the manifest and, when present, the signature before touching a destination. It writes the kit to `.offgrid/continuity.md` and the model to `models/` by default; `--out` and `--model-out` choose other paths, and `--force` replaces existing files. A corrupted or unsigned-but-expected-signed backup is refused rather than partially restored.
+
 This is still software. It cannot owe allegiance, feel loyalty or protect anyone physically; the priority order and the kit are what that request can honestly become. The code refuses the line where loyalty would become harm.
 
 ## Trust and security, without the theatre
@@ -568,7 +698,8 @@ Security reviews happen consistently, not when someone remembers:
 ```console
 offgrid security review            secrets, permissions, .gitignore, exposure
 offgrid security review --changed  only what changed in this session
-offgrid security watch --review --interval 300   re-review the workspace; show only new findingsoffgrid security watch --review --install-timer --interval 300  install a systemd user timer
+offgrid security watch --review --interval 300   re-review the workspace; show only new findings
+offgrid security watch --review --install-timer --interval 300  install a systemd user timer
   offgrid security watch --review --install-service --interval 300  run continuously in a systemd user service
   offgrid security watch --review --service-file PATH  generate a continuous service file without enabling it
   offgrid security watch --remove-timer           remove the periodic timer
@@ -630,11 +761,19 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
   "review_rounds": -1,
   "test_fix_rounds": -1,
   "verify_command": "python3 -m pytest -q",
-  "verbose": 2
+  "verbose": 2,
+  "speak": false,
+  "voice": "",
+  "self_improve_idle": false,
+  "self_improve_idle_minutes": 15,
+  "self_improve_retention_days": 30,
+  "self_improve_keep": 20,
+  "maintenance_interval": 3600,
+  "maintenance_improve": false
 }
 ```
 
-Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `NO_COLOR=1`.
+Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
 
 `-1` on `review_rounds`, `test_fix_rounds`, `review_passes`, `plan_candidates` and `quality_rounds` means "use the effort profile"; any explicit number wins over it. Verification auto-detects `pytest`, `cargo test`, `go test ./...` and `npm test`.
 
@@ -657,11 +796,13 @@ Every stage is tolerant: a planner that returns prose, a reviewer that returns g
 ## Development
 
 ```console
-python3 -m unittest discover -s tests -t .   # 435 tests, no network, no model
+python3 -m unittest discover -s tests -t .   # 505 tests, no network, no model
 python3 scripts/demo.py                      # full team run against a scripted model
 ```
 
-The suite runs the entire pipeline — planner, coder, tester, reviewer, lead, archivist, verification and the fix loop — against a scripted local server (`tests/fake_llm.py`), including the no-native-tools fallback path, plus memory ranking, council privacy gates, library indexing and the honesty contract. No downloads, no keys, no GPU.
+The suite runs the entire pipeline — planner, coder, tester, reviewer, lead, archivist, verification and the fix loop — against the packaged scripted server (`offgrid/fake_llm.py`), including the no-native-tools fallback path, plus memory ranking, council privacy gates, library indexing and the honesty contract. No downloads, no keys, no GPU.
+
+More documentation: [CONTRIBUTING.md](CONTRIBUTING.md) for development and packaging checks, [SECURITY.md](SECURITY.md) for the threat model and reporting route, [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common failures, and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) for a release audit.
 
 ### Adding a tool
 
@@ -681,7 +822,10 @@ Add an `AgentSpec` to `ROSTER` in `offgrid/agents.py` with a role prompt in `off
 - Prebuilt llama.cpp builds are per-platform; a USB stick built on x86-64 Linux will not run on an Apple Silicon laptop. Run the builder once per platform, or install Ollama on the target.
 - The security review is a finite checklist, not a proof. It cannot see a secret computed at runtime, and it does not watch the network.
 - Full-disk encryption remains an OS operation. OffGrid encrypts chosen files and folders only, and cannot erase their plaintext.
+- `--speak` is output only. It uses the OS voice; microphone input needs a local speech-to-text model that is not bundled.
+- Self-improvement is gated but still model-generated. Review the diff; snapshots cover only the files in the request and are not a substitute for git or a full backup.
+- The server maintenance loop is not a process supervisor and does not expose an HTTP service. Run it under systemd or your existing supervisor; it only prunes old terminal request snapshots and never applies code.
 
 ## License
 
-MIT. Yours to fork, ship and sell. The models you download have their own licences (Qwen2.5-Coder is Apache-2.0).
+MIT. Yours to fork, ship and sell. The models you download have their own licences (Qwen2.5-Coder and Qwen3.6-35B-A3B are Apache-2.0).

@@ -311,6 +311,77 @@ class CliTests(unittest.TestCase):
             self.assertFalse(backups["ok"])
             self.assertIn("no SHA-256 manifest", backups["detail"])
 
+    def test_protect_restore_verifies_and_restores_kit_and_model(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            kit = root / ".offgrid" / "continuity.md"
+            kit.write_text(continuity_kit(Config(), root), encoding="utf-8")
+            (root / "models").mkdir()
+            (root / "models" / "model.gguf").write_bytes(b"GGUF model bytes")
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                backed_up = main(
+                    ["protect", "--backup", str(target), "--workspace", tmp, "--no-color"]
+                )
+            self.assertEqual(backed_up, 0)
+
+            restored_root = root / "restored"
+            restored_root.mkdir()
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                code = main(
+                    [
+                        "protect",
+                        "--restore",
+                        str(target),
+                        "--workspace",
+                        str(restored_root),
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            data = json.loads(output.getvalue())
+            self.assertTrue(data["restored"])
+            self.assertFalse(data["signed"])
+            self.assertEqual(
+                (restored_root / ".offgrid" / "continuity.md").read_text(encoding="utf-8"),
+                kit.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                (restored_root / "models" / "model.gguf").read_bytes(),
+                b"GGUF model bytes",
+            )
+            if os.name == "posix":
+                self.assertEqual(
+                    stat.S_IMODE((restored_root / ".offgrid" / "continuity.md").stat().st_mode),
+                    0o600,
+                )
+
+    def test_protect_restore_refuses_an_existing_destination_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            (root / ".offgrid" / "continuity.md").write_text(
+                continuity_kit(Config(), root), encoding="utf-8"
+            )
+            (root / "models").mkdir()
+            (root / "models" / "model.gguf").write_bytes(b"GGUF")
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(
+                    main(["protect", "--backup", str(target), "--workspace", tmp, "--no-color"]),
+                    0,
+                )
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                code = main(
+                    ["protect", "--restore", str(target), "--workspace", tmp, "--no-color"]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("already exists", output.getvalue())
+
     def test_protect_check_rejects_a_corrupted_backup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
             root = Path(tmp)

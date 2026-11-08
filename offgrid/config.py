@@ -62,6 +62,8 @@ class Config:
     recon: bool = True
     verbose: int = 2  # 0 quiet, 1 normal, 2 verbose
     color: bool = True
+    speak: bool = False  # read each final response aloud through an OS voice
+    voice: str = ""  # system voice name; empty uses the OS default
     session_dir: str = ".offgrid"
     max_output: int = 6000
     max_agent_history: int = 24
@@ -92,6 +94,16 @@ class Config:
     security_history: str = ".offgrid/security.jsonl"  # append-only review log
     watch_file: str = ".offgrid/watch.json"  # private connection baseline
 
+    # -- gated self-improvement -------------------------------------------
+    self_improve_idle: bool = False  # propose when chat is idle; never apply
+    self_improve_idle_minutes: float = 15.0
+    self_improve_retention_days: float = 30.0  # prune terminal request snapshots
+    self_improve_keep: int = 20  # always keep the newest terminal requests
+
+    # -- server self-maintenance ------------------------------------------
+    maintenance_interval: float = 3600.0  # seconds between self-debug passes
+    maintenance_improve: bool = False  # also prepare a pending improvement
+
     # -- loading ---------------------------------------------------------
     def merged(self, overrides: Dict[str, Any]) -> "Config":
         known = {f.name for f in fields(self)}
@@ -113,8 +125,11 @@ class Config:
             f"commands={self.command_policy} network={self.network} "
             f"effort={self.effort} memory={'on' if self.memory else 'off'} "
             f"scale={'on' if self.scale else 'off'} fleet={'on' if self.fleet else 'off'} "
-            f"council={'on' if self.council else 'off'}"
-            + (f"(auto) " if self.council and self.council_auto else " ")
+            f"speech={'on' if self.speak else 'off'} "
+            f"council={'on' if self.council else 'off'} "
+            f"self-improve={'idle' if self.self_improve_idle else 'manual'} "
+            f"maintenance={self.maintenance_interval:g}s"
+            + (f" (auto)" if self.council and self.council_auto else "")
         )
 
 
@@ -148,6 +163,11 @@ def _from_env() -> Dict[str, Any]:
         "OFFGRID_COMMAND_POLICY": ("command_policy", str),
         "OFFGRID_VERIFY": ("verify_command", str),
         "OFFGRID_TIMEOUT": ("request_timeout", int),
+        "OFFGRID_VOICE": ("voice", str),
+        "OFFGRID_IMPROVE_IDLE_MINUTES": ("self_improve_idle_minutes", float),
+        "OFFGRID_IMPROVE_RETENTION_DAYS": ("self_improve_retention_days", float),
+        "OFFGRID_IMPROVE_KEEP": ("self_improve_keep", int),
+        "OFFGRID_MAINTENANCE_INTERVAL": ("maintenance_interval", float),
     }
     for var, (key, caster) in mapping.items():
         raw = env.get(var)
@@ -162,6 +182,12 @@ def _from_env() -> Dict[str, Any]:
         out["network"] = "deny"
     if env.get("OFFGRID_NO_MEMORY", "").lower() in ("1", "true", "yes"):
         out["memory"] = False
+    if env.get("OFFGRID_SPEAK", "").lower() in ("1", "true", "yes"):
+        out["speak"] = True
+    if env.get("OFFGRID_IMPROVE_WHEN_IDLE", "").lower() in ("1", "true", "yes"):
+        out["self_improve_idle"] = True
+    if env.get("OFFGRID_MAINTENANCE_IMPROVE", "").lower() in ("1", "true", "yes"):
+        out["maintenance_improve"] = True
     if env.get("OFFGRID_COUNCIL", "").lower() in ("1", "true", "yes"):
         out["council"] = True
     if env.get("OFFGRID_COUNCIL_PUBLIC", "").lower() in ("1", "true", "yes"):

@@ -57,7 +57,7 @@ class FullBundleBuilderTests(unittest.TestCase):
             model_file = fixtures / model_name
             model_file.write_bytes(b"fake gguf")
 
-            def fake_download(url, destination, timeout=120):
+            def fake_download(url, destination, timeout=120, expected_sha256=""):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(url, destination)
 
@@ -91,6 +91,88 @@ class FullBundleBuilderTests(unittest.TestCase):
             self.assertTrue((target / "config.json").is_file())
             self.assertTrue((target / "README-FIRST.txt").is_file())
             self.assertEqual(fullbundle.missing_components(target), [])
+
+    def test_35b_is_a_real_model_option(self):
+        spec = fullbundle.MODELS["35b"]
+        self.assertEqual(spec["repo"], "ggml-org/Qwen3.6-35B-A3B-GGUF")
+        self.assertEqual(spec["file"], "Qwen3.6-35B-A3B-Q4_K_M.gguf")
+        self.assertEqual(len(str(spec["sha256"])), 64)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "usb"
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(StringIO()):
+                code = fullbundle.main(
+                    ["--dry-run", "--target", str(target), "--model", "35b"]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertIn("Qwen3.6-35B-A3B", output.getvalue())
+            self.assertIn("about 20.5 GB", output.getvalue())
+
+    def test_80b_is_opt_in_and_carries_a_pinned_hash(self):
+        spec = fullbundle.MODELS["80b"]
+        self.assertEqual(spec["repo"], "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF")
+        self.assertEqual(spec["file"], "Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf")
+        self.assertEqual(
+            spec["sha256"],
+            "d103b2733ec1012a52d01edda66b7e5c24ae50508c9f99f5297ea459ef3c061a",
+        )
+        self.assertEqual(spec["min_ram_gb"], 64)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "usb"
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(StringIO()):
+                code = fullbundle.main(
+                    ["--dry-run", "--target", str(target), "--model", "80b"]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertIn("Qwen3-Next-80B-A3B", output.getvalue())
+            self.assertIn("about 48.4 GB", output.getvalue())
+
+    def test_80b_ram_warning_is_clear_below_64_gb(self):
+        warning = fullbundle.ram_warning("80b", 16)
+        self.assertIn("64 GB", warning)
+        self.assertIn("16.0 GB", warning)
+        self.assertIn("disk", warning)
+        self.assertEqual(fullbundle.ram_warning("80b", 64), "")
+        self.assertIn("could not be detected", fullbundle.ram_warning("80b", 0))
+        self.assertEqual(fullbundle.ram_warning("35b", 16), "")
+
+    def test_disk_preflight_rejects_a_short_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(fullbundle, "free_space_gb", return_value=10.0):
+                with self.assertRaisesRegex(
+                    fullbundle.FullBundleError, "not enough free space"
+                ):
+                    fullbundle.ensure_free_space(Path(tmp), 50.0)
+
+    def test_direct_builder_stops_before_writing_when_disk_is_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "usb"
+            output = StringIO()
+            with patch.object(fullbundle, "free_space_gb", return_value=1.0):
+                with redirect_stdout(output), redirect_stderr(StringIO()):
+                    code = fullbundle.main(
+                        [
+                            "--target",
+                            str(target),
+                            "--model",
+                            "80b",
+                            "--skip-python",
+                            "--skip-llama",
+                            "--skip-model",
+                        ]
+                    )
+            self.assertEqual(code, 1)
+            self.assertIn("not enough free space", output.getvalue())
+            self.assertFalse(target.exists())
+
+    def test_bad_download_checksum_is_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.gguf"
+            path.write_bytes(b"not the expected weights")
+            with self.assertRaises(OSError):
+                fullbundle._verify_download(path, "0" * 64)
+            self.assertFalse(path.exists())
 
     def test_missing_components_are_named(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,6 +211,39 @@ class FullBundleScriptTests(unittest.TestCase):
 
 
 class FullBundleWizardTests(unittest.TestCase):
+    def test_wizard_refuses_80b_when_free_space_is_short_before_building(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as media:
+            device = Path(media) / "USB"
+            device.mkdir()
+            output = StringIO()
+            errors = StringIO()
+            inputs = ["4", "1", "offgrid-usb", "80b"]
+            with patch.object(
+                fullbundle,
+                "ensure_free_space",
+                side_effect=fullbundle.FullBundleError(
+                    "not enough free space for test: need about 50.0 GB"
+                ),
+            ), patch(
+                "offgrid.portable.connected_devices",
+                return_value=[portable.Device(device, "USB")],
+            ), patch("offgrid.fullbundle.build_full_bundle") as build, patch(
+                "builtins.input", side_effect=inputs
+            ):
+                with redirect_stdout(output), redirect_stderr(errors):
+                    code = main(
+                        [
+                            "distribute",
+                            "--wizard",
+                            "--workspace",
+                            workspace,
+                            "--no-color",
+                        ]
+                    )
+            self.assertEqual(code, 1)
+            self.assertIn("not enough free space", errors.getvalue())
+            build.assert_not_called()
+
     def test_wizard_builds_a_full_bundle_on_the_selected_device(self):
         with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as media:
             device = Path(media) / "USB"

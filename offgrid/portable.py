@@ -11,18 +11,21 @@ not make a bootable operating-system image.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import zipapp
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import __version__
+from ._bundle import assets_root, missing_assets, package_root
 
 BUNDLE_PREFIX = f"offgrid-{__version__}"
 PYZ_NAME = "offgrid.pyz"
@@ -54,6 +57,7 @@ model file, is a separate and much larger build:
 Install or copy it to a mounted device from the app itself:
 
   python3 offgrid.pyz distribute --list
+  python3 offgrid.pyz distribute --check-drive /media/USB --bundle dist/offgrid-portable.zip
   python3 offgrid.pyz distribute --to /media/USB
 
 OffGrid never writes to a raw block device. Install to the mounted filesystem,
@@ -80,6 +84,8 @@ WINDOWS_SYSTEM_TARGETS = {
     "c:/program files",
     "c:/program files (x86)",
 }
+FAT_FILESYSTEMS = {"fat", "fat32", "vfat", "msdos"}
+DRIVE_MARGIN_GB = 1.0
 
 
 class PortableError(Exception):
@@ -95,11 +101,69 @@ class Device:
         return {"path": str(self.path), "label": self.label}
 
 
+@dataclass(frozen=True)
+class DriveReport:
+    target: Path
+    bundle: Path
+    filesystem: str
+    free_gb: float
+    required_gb: float
+    bundle_gb: float
+    model_files: Tuple[str, ...]
+
+    @property
+    def model_checked(self) -> bool:
+        return bool(self.model_files)
+
+    def as_dict(self) -> dict:
+        return {
+            "target": str(self.target),
+            "bundle": str(self.bundle),
+            "filesystem": self.filesystem,
+            "free_gb": self.free_gb,
+            "required_gb": self.required_gb,
+            "bundle_gb": self.bundle_gb,
+            "model_files": list(self.model_files),
+            "model_checked": self.model_checked,
+        }
+
+
 def source_root() -> Path:
-    root = Path(__file__).resolve().parent.parent
-    if not (root / "offgrid" / "cli.py").is_file():
-        raise PortableError("run the builder from an OffGrid source tree or an unpacked bundle")
+    """Return the directory that contains the importable package.
+
+    A wheel installs it under site-packages; a source checkout is its parent.
+    Assets such as launchers and scripts are located separately because a
+    wheel stores them under ``share/offgrid``.
+    """
+    root = package_root()
+    if root is None:
+        raise PortableError(
+            "run the builder from an OffGrid source tree, a wheel install, or an unpacked bundle"
+        )
     return root
+
+
+def bundle_assets_root() -> Path:
+    """Return the directory holding launchers, scripts, README and licence."""
+    root = assets_root()
+    if root is None:
+        raise PortableError(
+            "bundle assets are missing from this installation; reinstall OffGrid "
+            "from a wheel or run it from a source checkout"
+        )
+    return root
+
+
+def _require_assets(assets: Path, with_tests_from: Path, with_tests: bool) -> None:
+    missing = missing_assets(assets)
+    if with_tests and not (with_tests_from / "tests").is_dir():
+        missing.append("tests/")
+    if missing:
+        raise PortableError(
+            "this installation is missing bundle files: "
+            + ", ".join(missing)
+            + "; reinstall OffGrid from a wheel or use a source checkout"
+        )
 
 
 def _make_executable(path: Path) -> None:
@@ -142,10 +206,10 @@ def build_pyz(destination: Path, source: Optional[Path] = None, force: bool = Fa
     return destination
 
 
-def _copy_item(staging: Path, source: Path, name: str) -> None:
+def _copy_required(staging: Path, source: Path, name: str) -> None:
     source_item = source / name
     if not source_item.exists():
-        return
+        raise PortableError(f"bundle asset missing: {source_item}")
     destination = staging / name
     if source_item.is_dir():
         shutil.copytree(source_item, destination, ignore=_ignore)
@@ -171,6 +235,8 @@ def build_bundle(
 ) -> Path:
     """Build a zip containing source, launchers and the single-file app."""
     source = Path(source) if source is not None else source_root()
+    assets = bundle_assets_root()
+    _require_assets(assets, source, with_tests)
     destination = Path(destination).expanduser()
     if destination.exists() and not force:
         raise PortableError(f"{destination} already exists; pass --force to replace it")
@@ -181,10 +247,11 @@ def build_bundle(
     with tempfile.TemporaryDirectory(prefix="offgrid-bundle-") as tmp:
         staging = Path(tmp) / BUNDLE_PREFIX
         staging.mkdir()
-        for name in ("offgrid", "launch", "scripts", "pyproject.toml", "README.md", "LICENSE"):
-            _copy_item(staging, source, name)
+        _copy_required(staging, source, "offgrid")
+        for name in ("launch", "scripts", "pyproject.toml", "README.md", "LICENSE"):
+            _copy_required(staging, assets, name)
         if with_tests:
-            _copy_item(staging, source, "tests")
+            _copy_required(staging, source, "tests")
         for launcher in ("offgrid.sh", "offgrid.command"):
             candidate = staging / "launch" / launcher
             if candidate.is_file():
@@ -209,6 +276,9 @@ def build_distribution(
     if destination.suffix.lower() != ".zip":
         destination = destination.with_suffix(".zip")
     pyz_path = destination.with_suffix(".pyz")
+    source = Path(source) if source is not None else source_root()
+    assets = bundle_assets_root()
+    _require_assets(assets, source, with_tests)
     if not force:
         for path in (destination, pyz_path):
             if path.exists():
@@ -293,6 +363,192 @@ def _validate_target(target: Path) -> Path:
     return resolved
 
 
+def is_mount_point(path: Path) -> bool:
+    """Whether *path* is a mounted filesystem root, such as a USB drive."""
+    try:
+        return os.path.ismount(Path(path).expanduser().resolve())
+    except OSError:
+        return False
+
+
+def _run_filesystem_command(args: Sequence[str]) -> str:
+    try:
+        proc = subprocess.run(
+            list(args), capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _windows_filesystem(path: Path) -> str:
+    try:
+        import ctypes
+
+        drive = os.path.splitdrive(str(Path(path).resolve()))[0]
+        root = f"{drive}\\" if drive else "C:\\"
+        name = ctypes.create_unicode_buffer(256)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(root), None, 0, None, None, None, name, len(name)
+        )
+        return name.value if ok else ""
+    except Exception:
+        return ""
+
+
+def filesystem_type(path: Path) -> str:
+    """Best-effort filesystem name without adding a dependency."""
+    path = Path(path).expanduser()
+    if os.name == "nt":
+        return _windows_filesystem(path) or "unknown"
+    if sys.platform == "darwin":
+        command = ("stat", "-f", "%HT", str(path))
+    else:
+        command = ("stat", "-f", "-c", "%T", str(path))
+    found = _run_filesystem_command(command)
+    if found:
+        return found
+    # Linux fallback for stat implementations that do not support -f -c.
+    if sys.platform != "darwin":
+        output = _run_filesystem_command(("df", "-P", "-T", str(path)))
+        lines = [line for line in output.splitlines() if line.strip()]
+        if len(lines) > 1 and len(lines[1].split()) > 1:
+            return lines[1].split()[1]
+    return "unknown"
+
+
+def _hash_stream(handle) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _known_model_hashes() -> Dict[str, str]:
+    """Pinned hashes for the GGUF files shipped by the full-bundle builder."""
+    from . import fullbundle
+
+    return {
+        str(spec["file"]): str(spec["sha256"])
+        for spec in fullbundle.MODELS.values()
+        if spec.get("file") and spec.get("sha256")
+    }
+
+
+def _verify_model_stream(name: str, handle) -> None:
+    expected = _known_model_hashes().get(Path(name).name)
+    if not expected:
+        raise PortableError(
+            f"cannot verify {Path(name).name}: no pinned SHA-256 for that model; "
+            "use a bundled 3b/7b/14b/35b/80b model or remove it"
+        )
+    actual = _hash_stream(handle)
+    if actual.lower() != expected.lower():
+        raise PortableError(
+            f"SHA-256 mismatch for {Path(name).name}: expected {expected}, got {actual}; "
+            "do not transfer this bundle"
+        )
+
+
+def _verify_bundle_models(bundle: Path) -> Tuple[str, ...]:
+    if bundle.is_dir():
+        paths = sorted(path for path in bundle.rglob("*.gguf") if path.is_file())
+        for path in paths:
+            try:
+                with path.open("rb") as handle:
+                    _verify_model_stream(path.name, handle)
+            except OSError as exc:
+                raise PortableError(f"could not read model {path}: {exc}") from exc
+        return tuple(path.name for path in paths)
+
+    if bundle.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(bundle) as archive:
+                infos = [
+                    info
+                    for info in archive.infolist()
+                    if info.filename.lower().endswith(".gguf") and not info.is_dir()
+                ]
+                for info in infos:
+                    with archive.open(info) as handle:
+                        _verify_model_stream(info.filename, handle)
+                return tuple(Path(info.filename).name for info in infos)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise PortableError(f"could not read bundle {bundle}: {exc}") from exc
+    return ()
+
+
+def bundle_size_bytes(bundle: Path) -> int:
+    if bundle.is_dir():
+        try:
+            return sum(path.stat().st_size for path in bundle.rglob("*") if path.is_file())
+        except OSError as exc:
+            raise PortableError(f"could not measure {bundle}: {exc}") from exc
+    if bundle.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(bundle) as archive:
+                return sum(info.file_size for info in archive.infolist() if not info.is_dir())
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise PortableError(f"could not measure {bundle}: {exc}") from exc
+    try:
+        return bundle.stat().st_size
+    except OSError as exc:
+        raise PortableError(f"could not measure {bundle}: {exc}") from exc
+
+
+def check_usb_drive(
+    target: Path,
+    bundle: Path,
+    *,
+    require_exfat: bool = True,
+    margin_gb: float = DRIVE_MARGIN_GB,
+) -> DriveReport:
+    """Check a mounted target and bundle before copying anything."""
+    target = _validate_target(target)
+    bundle = Path(bundle).expanduser().resolve()
+    if not bundle.exists():
+        raise PortableError(f"bundle not found: {bundle}")
+    if not os.access(target, os.W_OK):
+        raise PortableError(f"target is not writable: {target}")
+
+    filesystem = filesystem_type(target)
+    name = filesystem.lower()
+    if name in FAT_FILESYSTEMS:
+        raise PortableError(
+            f"{target} is {filesystem}, which cannot hold a 4 GB+ GGUF; "
+            "format it as exFAT"
+        )
+    if require_exfat and name != "exfat":
+        raise PortableError(
+            f"{target} is {filesystem or 'unknown'}, not exFAT; "
+            "format the drive as exFAT or choose another target"
+        )
+
+    size = bundle_size_bytes(bundle)
+    bundle_gb = round(size / (1024 ** 3), 1)
+    required_gb = round(bundle_gb + max(0.0, margin_gb), 1)
+    try:
+        free_gb = round(shutil.disk_usage(target).free / (1024 ** 3), 1)
+    except OSError as exc:
+        raise PortableError(f"could not measure free space on {target}: {exc}") from exc
+    if free_gb < required_gb:
+        raise PortableError(
+            f"not enough free space on {target}: need about {required_gb:.1f} GB, "
+            f"have {free_gb:.1f} GB"
+        )
+
+    model_files = _verify_bundle_models(bundle)
+    return DriveReport(
+        target=target,
+        bundle=bundle,
+        filesystem=filesystem,
+        free_gb=free_gb,
+        required_gb=required_gb,
+        bundle_gb=bundle_gb,
+        model_files=model_files,
+    )
+
+
 def _safe_extract(archive: zipfile.ZipFile, target: Path) -> None:
     base = target.resolve()
     for info in archive.infolist():
@@ -325,17 +581,110 @@ def _safe_extract(archive: zipfile.ZipFile, target: Path) -> None:
                 pass
 
 
+def _validate_bundle_directory(bundle: Path) -> Path:
+    """Check the shape and links of a full-bundle directory before copying.
+
+    Runtime archives can contain harmless internal file links (for example a
+    portable Python's ``bin/python3``). Those are copied as their target file,
+    because a USB filesystem may not support symlinks. Links that escape the
+    bundle, point at directories, or are broken are refused.
+    """
+    bundle = Path(bundle).expanduser().resolve()
+    if not bundle.is_dir():
+        raise PortableError(f"bundle directory not found: {bundle}")
+    if not (bundle / "launch").is_dir():
+        raise PortableError(f"full-bundle directory must contain launch/: {bundle}")
+    if not (bundle / "offgrid").is_dir() and not (bundle / "offgrid.pyz").is_file():
+        raise PortableError(
+            f"full-bundle directory must contain offgrid/ or offgrid.pyz: {bundle}"
+        )
+    try:
+        for path in bundle.rglob("*"):
+            if not path.is_symlink():
+                continue
+            label = path.relative_to(bundle)
+            try:
+                target = path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise PortableError(f"broken symlink in bundle: {label}") from exc
+            try:
+                target.relative_to(bundle)
+            except ValueError:
+                raise PortableError(
+                    f"symlink in bundle points outside the bundle: {label}"
+                ) from None
+            if target.is_dir():
+                raise PortableError(
+                    f"symlinked directory in bundle: {label}; copy its contents into the bundle"
+                )
+    except OSError as exc:
+        raise PortableError(f"could not read bundle directory {bundle}: {exc}") from exc
+    return bundle
+
+
+def _bundle_destination(bundle: Path, target: Path) -> Path:
+    """Choose the installed folder and refuse a copy that would recurse."""
+    if not bundle.name or bundle == bundle.parent:
+        raise PortableError("choose a bundle directory, not a filesystem root")
+    destination = target / bundle.name
+    try:
+        destination.resolve().relative_to(target)
+    except ValueError:
+        raise PortableError(f"bundle destination escapes target: {destination}") from None
+    try:
+        destination.resolve().relative_to(bundle)
+    except ValueError:
+        return destination
+    raise PortableError(
+        "bundle destination is inside the source bundle; choose another target"
+    )
+
+
+def _install_bundle_directory(
+    bundle: Path,
+    target: Path,
+    force: bool = False,
+    dry_run: bool = False,
+) -> Path:
+    """Copy a full-bundle directory into the mounted target."""
+    bundle = _validate_bundle_directory(bundle)
+    destination = _bundle_destination(bundle, target)
+    if destination.exists():
+        if not force:
+            raise PortableError(f"{destination} already exists; pass --force to replace it")
+        if not destination.is_dir():
+            raise PortableError(
+                f"{destination} exists and is not a directory; remove it first"
+            )
+    if not dry_run:
+        shutil.copytree(
+            bundle,
+            destination,
+            dirs_exist_ok=force,
+            copy_function=shutil.copy2,
+        )
+        for name in ("launch/offgrid.sh", "launch/offgrid.command", "offgrid.pyz"):
+            candidate = destination / name
+            if candidate.is_file():
+                _make_executable(candidate)
+    return destination
+
+
 def install_bundle(
     bundle: Path,
     target: Path,
     force: bool = False,
     dry_run: bool = False,
 ) -> Path:
-    """Copy a ``.pyz`` or unpack a portable zip into a mounted directory."""
+    """Copy a ``.pyz``, unpack a portable zip, or install a full-bundle directory."""
     bundle = Path(bundle).expanduser().resolve()
     target = _validate_target(target)
-    if not bundle.exists() or not bundle.is_file():
+    if not bundle.exists():
         raise PortableError(f"bundle not found: {bundle}")
+    if bundle.is_dir():
+        return _install_bundle_directory(bundle, target, force=force, dry_run=dry_run)
+    if not bundle.is_file():
+        raise PortableError("bundle must be a .zip, .pyz, or full-bundle directory")
 
     suffix = bundle.suffix.lower()
     if suffix == ".pyz":

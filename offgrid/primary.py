@@ -101,6 +101,27 @@ class BackupReport:
 
 
 @dataclass(frozen=True)
+class RestoreReport:
+    source: Path
+    kit_source: Path
+    model_source: Path
+    kit_path: Path
+    model_path: Path
+    manifest: Path
+    signed: bool
+
+    def as_dict(self) -> dict:
+        return {
+            "source": str(self.source),
+            "kit": {"source": str(self.kit_source), "path": str(self.kit_path)},
+            "model": {"source": str(self.model_source), "path": str(self.model_path)},
+            "manifest": str(self.manifest),
+            "signed": self.signed,
+            "restored": True,
+        }
+
+
+@dataclass(frozen=True)
 class ReadinessCheck:
     name: str
     ok: bool
@@ -621,6 +642,99 @@ def backup_files(
         signature=signature_path,
         signing_key=key_path,
         signing_key_created=key_created,
+    )
+
+
+def restore_backup(
+    config: Any,
+    workspace: Path,
+    source: Path,
+    kit_path: Optional[Path] = None,
+    model_path: Optional[Path] = None,
+    force: bool = False,
+    signing_key_path: Optional[Path] = None,
+) -> RestoreReport:
+    """Verify a backup and restore its kit and model into this workspace.
+
+    The manifest is checked before any destination file is touched. A signed
+    backup requires the matching key. Existing destination files are left
+    alone unless ``force`` is true.
+    """
+    from .private import ensure_private_dir, harden_file
+
+    source = Path(source).expanduser()
+    try:
+        source = source.resolve()
+    except OSError as exc:
+        raise BackupError(f"could not resolve backup location {source}: {exc}") from exc
+    if not source.is_dir():
+        raise BackupError(f"backup location is not a directory: {source}")
+
+    key: Optional[bytes] = None
+    if signing_key_path is not None:
+        key = _read_signing_key(_resolve_signing_key(signing_key_path))
+    ok, detail = _verify_backup(source, key)
+    if not ok:
+        raise BackupError(f"refusing to restore: {detail}")
+
+    manifest = source / BACKUP_MANIFEST
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise BackupError(f"could not read {manifest}: {exc}") from exc
+    entries = [line[66:] for line in lines if line]
+    models = [name for name in entries if Path(name).suffix.lower() in MODEL_SUFFIXES]
+    kits = [name for name in entries if name not in models]
+    if len(models) != 1:
+        raise BackupError(
+            f"expected exactly one model in {manifest}, found {len(models)}; "
+            "this is not a backup made by `offgrid protect --backup`"
+        )
+    if len(kits) != 1:
+        raise BackupError(
+            f"expected exactly one continuity kit in {manifest}, found {len(kits)}"
+        )
+
+    model_name = models[0]
+    kit_name = kits[0]
+    default_kit = Path(workspace) / config.session_dir / "continuity.md"
+    destination_kit = Path(kit_path).expanduser() if kit_path is not None else default_kit
+    if model_path is not None:
+        destination_model = Path(model_path).expanduser()
+        if destination_model.is_dir():
+            destination_model = destination_model / Path(model_name).name
+    else:
+        destination_model = Path(workspace) / "models" / Path(model_name).name
+
+    for destination, label in (
+        (destination_kit, "continuity kit"),
+        (destination_model, "model"),
+    ):
+        if destination.exists() and not force:
+            raise BackupError(
+                f"{destination} already exists; pass --force to replace the restored {label}"
+            )
+    if destination_kit == destination_model:
+        raise BackupError("the continuity kit and model cannot restore to the same path")
+
+    kit_source = source / kit_name
+    model_source = source / model_name
+    ensure_private_dir(destination_kit.parent)
+    destination_model.parent.mkdir(parents=True, exist_ok=True)
+    # Copy the large model first. If that fails, an existing kit is untouched;
+    # a partial restore must never delete a file the user already had.
+    _copy_file(model_source, destination_model, force=True)
+    _copy_file(kit_source, destination_kit, force=True)
+    harden_file(destination_kit)
+
+    return RestoreReport(
+        source=source,
+        kit_source=kit_source,
+        model_source=model_source,
+        kit_path=destination_kit,
+        model_path=destination_model,
+        manifest=manifest,
+        signed=(source / BACKUP_SIGNATURE).is_file(),
     )
 
 

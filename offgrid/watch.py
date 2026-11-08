@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .netmap import Connection, collect
+from .private import ensure_private_dir
 
 WATCH_VERSION = 1
 REMOTE_ACCESS_PORTS = {22, 23, 3389, 5900, 5901, 5985, 5986}
@@ -94,7 +95,7 @@ def capture() -> Snapshot:
 def save(snapshot: Snapshot, path: Path) -> None:
     """Write the baseline atomically and privately: it contains local addresses."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(snapshot.as_dict(), indent=2), encoding="utf-8")
     try:

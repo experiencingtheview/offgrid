@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .orchestrator import RunResult
+from .private import append_private_text, ensure_private_dir
 
 
 class SessionLog:
@@ -25,7 +26,7 @@ class SessionLog:
         if self._started:
             return
         try:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(self.dir)
             self._started = True
         except OSError:
             self._started = False
@@ -36,8 +37,7 @@ class SessionLog:
             return
         record = {"t": round(time.time(), 3), "kind": kind, "data": payload}
         try:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            append_private_text(self.path, json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
 

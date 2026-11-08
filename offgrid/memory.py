@@ -22,6 +22,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from .private import ensure_private_dir, harden_file
 from .semantics import Lexicon, load_lexicon, match
 
 KINDS = ("fact", "repo", "lesson", "warning", "preference", "decision", "correction", "source")
@@ -183,7 +184,7 @@ class MemoryStore:
         lexicon_file: Optional[Path] = None,
     ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self.path.parent)
         # A project file next to memory.db is the default extension point.
         self.lexicon = lexicon or load_lexicon(
             lexicon_file if lexicon_file is not None else self.path.parent / "lexicon.json"
@@ -192,6 +193,7 @@ class MemoryStore:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        harden_file(self.path)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -413,6 +415,35 @@ class MemoryStore:
                 changed += max(0, cursor.rowcount)
         return changed
 
+    def rejections_by_id(self, ids: Iterable[int]) -> List[Rejection]:
+        """The ledger entries for specific IDs, in the order requested."""
+        wanted = list(dict.fromkeys(int(ident) for ident in ids))
+        if not wanted:
+            return []
+        placeholders = ", ".join("?" for _ in wanted)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT * FROM lesson_rejections WHERE id IN ({placeholders})",
+                wanted,
+            ).fetchall()
+        found = {int(row["id"]): self._rejection(row) for row in rows}
+        return [found[ident] for ident in wanted if ident in found]
+
+    def matching_rejections(self, text: str, limit: int = 500) -> List[Rejection]:
+        """The ledger entries an exact text or meaning search would forgive."""
+        text = (text or "").strip()
+        if not text:
+            return []
+        if len(text) >= 4:
+            with self._lock:
+                row = self._db.execute(
+                    "SELECT * FROM lesson_rejections WHERE text_key = ?",
+                    (make_key("rejected", text),),
+                ).fetchone()
+            if row is not None:
+                return [self._rejection(row)]
+        return self.rejected(limit=limit, query=text)
+
     def forgive_matching(self, text: str, limit: int = 500) -> int:
         """Forgive ledger entries by exact text, or else by a meaning search.
 
@@ -420,18 +451,7 @@ class MemoryStore:
         broader search, so forgiving one specific lesson cannot accidentally
         lift its neighbours' bans. Returns how many records were removed.
         """
-        text = (text or "").strip()
-        if not text:
-            return 0
-        if len(text) >= 4:
-            with self._lock:
-                row = self._db.execute(
-                    "SELECT id FROM lesson_rejections WHERE text_key = ?",
-                    (make_key("rejected", text),),
-                ).fetchone()
-            if row is not None:
-                return self.forgive([int(row["id"])])
-        return self.forgive([item.id for item in self.rejected(limit=limit, query=text)])
+        return self.forgive([item.id for item in self.matching_rejections(text, limit)])
 
     def rejected(self, limit: int = 50, query: str = "") -> List[Rejection]:
         """The rejection ledger, newest first. These never enter prompts."""

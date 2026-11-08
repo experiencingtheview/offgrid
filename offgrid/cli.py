@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,7 @@ from .hardware import probe, recommend
 from .scale import adjust as adjust_effort, capacity_for, describe as describe_capacity
 from .orchestrator import RunResult, Team
 from .providers import LocalProvider, ProviderError, discover, open_provider
+from .self_improve import IdleWatcher, ImproveError, SelfImprover
 from .session import SessionLog
 from .ui import UI
 from .workspace import Workspace
@@ -28,6 +30,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
 
   offgrid run "add a /health endpoint to app.py"    one-shot team run
   offgrid chat                                      interactive session
+  offgrid demo                                      scripted demo, no model needed
   offgrid doctor                                    check the local model setup
   offgrid models                                    list models on the server
   offgrid agents                                    show the team roster
@@ -38,9 +41,11 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid fleet [list|add|remove|ping|scan|serve]    use your other devices' power
   offgrid security [review|map|watch|history|plan|encrypt|decrypt]   reviews, changes, encryption
   offgrid trust                                     what it promises and what it may do
-  offgrid protect [--kit|--check|--backup PATH]     whose side it is on, and a household kit
+  offgrid protect [--kit|--check|--restore PATH]    whose side it is on, and a household kit
   offgrid lexicon [--json] [--strict]               the merged meaning vocabulary
-  offgrid distribute [--wizard|--build|--list|--to]  build or copy a portable app
+  offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
+  offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
+  offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 
 Offline by default. `--council` consults other models when this one is stuck;
 `--council-public` additionally allows keyless public ones, which sends your
@@ -48,6 +53,18 @@ question off this machine.
 
 No account, no API key, no internet. Everything runs against a model server on
 localhost (llama.cpp, Ollama, LM Studio, vLLM).
+
+Add --speak to run or chat to hear the final response through a voice already
+installed on this machine. Linux needs espeak-ng (or espeak/festival); macOS and
+Windows use their built-in voices. This reads responses aloud; it does not listen.
+
+The self-improvement workflow is gated: `improve propose` runs the team in a
+copy and leaves a request for review. Nothing reaches the live files until
+`improve approve ID`; each approval keeps a restorable snapshot, and failed
+verification rolls it back. `chat --improve-when-idle` only creates pending
+requests while you are away. For a server or a long-running process,
+`offgrid maintain` checks its own health, prunes old terminal snapshots, and
+can prepare pending requests without a chat session.
 """
 
 
@@ -126,10 +143,49 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="one-shot team run")
     run.add_argument("task", nargs="+", help="what you want built or fixed")
     run.add_argument("--json", action="store_true", help="machine-readable result on stdout")
+    run.add_argument(
+        "--speak",
+        action="store_true",
+        help="read the final response aloud with an offline system voice",
+    )
+    run.add_argument(
+        "--voice",
+        default="",
+        metavar="NAME",
+        help="system voice for --speak (default: the OS voice)",
+    )
     add_common(run)
 
     chat = subparsers.add_parser("chat", help="interactive REPL")
+    chat.add_argument(
+        "--speak",
+        action="store_true",
+        help="read each final response aloud with an offline system voice",
+    )
+    chat.add_argument(
+        "--voice",
+        default="",
+        metavar="NAME",
+        help="system voice for --speak (default: the OS voice)",
+    )
+    chat.add_argument(
+        "--improve-when-idle",
+        action="store_true",
+        help="after a quiet period, propose an improvement as a pending request (never apply it)",
+    )
+    chat.add_argument(
+        "--idle-minutes",
+        type=float,
+        default=None,
+        metavar="MINUTES",
+        help="quiet minutes before the idle self-improvement pass (default: 15)",
+    )
     add_common(chat)
+
+    demo = subparsers.add_parser(
+        "demo", help="run a scripted end-to-end demo with no model or network"
+    )
+    demo.add_argument("--no-color", action="store_true", help="plain text output")
 
     doctor = subparsers.add_parser("doctor", help="check the local environment and model server")
     doctor.add_argument(
@@ -137,6 +193,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="PATH",
         help="key file for verifying a signed backup manifest",
+    )
+    doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 if the project lexicon has warnings",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="machine-readable report on stdout",
     )
     add_common(doctor)
 
@@ -166,6 +232,11 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     memory.add_argument("terms", nargs="*")
+    memory.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="forgive/forget: preview records without removing them",
+    )
     add_common(memory)
 
     lexicon = subparsers.add_parser(
@@ -296,10 +367,24 @@ def build_parser() -> argparse.ArgumentParser:
             "(and optionally signed) backups, and local model"
         ),
     )
+    protect_mode.add_argument(
+        "--restore",
+        metavar="PATH",
+        help="verify a backup directory and restore its kit and model",
+    )
     protect.add_argument(
         "--out",
         default="",
-        help="kit path to write, check, or use as the backup source (default: .offgrid/continuity.md)",
+        help=(
+            "kit path to write, check, use as the backup source, or restore to "
+            "(default: .offgrid/continuity.md)"
+        ),
+    )
+    protect.add_argument(
+        "--model-out",
+        default="",
+        metavar="PATH",
+        help="with --restore: model destination (default: models/<name>.gguf)",
     )
     protect.add_argument(
         "--force", action="store_true", help="overwrite an existing kit or backup files"
@@ -357,16 +442,85 @@ def build_parser() -> argparse.ArgumentParser:
         "--flash",
         dest="to",
         default="",
-        help="install into this mounted device directory (not a raw block device)",
+        help="install a zip, pyz, or full-bundle directory into this mounted device directory (not a raw block device)",
     )
     distribute.add_argument(
-        "--bundle", default="", help="bundle zip or pyz to install (default: build it, or find dist/)"
+        "--bundle",
+        default="",
+        help="bundle zip, pyz, or full-bundle directory (default: build it, or find dist/)",
     )
     distribute.add_argument("--force", action="store_true", help="replace an existing build or install")
     distribute.add_argument("--yes", action="store_true", help="do not ask before copying to a device")
     distribute.add_argument("--dry-run", action="store_true", help="show what would be copied, without writing")
+    distribute.add_argument(
+        "--check-drive",
+        dest="check_drive",
+        default="",
+        metavar="PATH",
+        help="check a mounted drive before copying: exFAT, free space, model SHA-256",
+    )
     distribute.add_argument("--json", action="store_true", help="machine-readable output")
     add_common(distribute)
+
+    maintain = subparsers.add_parser(
+        "maintain",
+        help="self-debug, housekeeping, and optional gated improvement for a long-running server",
+    )
+    maintain.add_argument(
+        "--once", action="store_true", help="run one pass and exit (for cron or a systemd timer)"
+    )
+    maintain.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="seconds between passes (default: 3600, or maintenance_interval)",
+    )
+    maintain.add_argument(
+        "--improve",
+        action="store_true",
+        help="also prepare one pending self-improvement request; never apply it",
+    )
+    maintain.add_argument(
+        "--retention-days",
+        type=float,
+        default=None,
+        metavar="DAYS",
+        help="prune terminal request snapshots older than this; 0 disables pruning",
+    )
+    maintain.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="always keep the newest N terminal requests (default: 20)",
+    )
+    maintain.add_argument("--json", action="store_true", help="one machine-readable report per pass")
+    add_common(maintain)
+
+    improve = subparsers.add_parser(
+        "improve", help="propose, approve, or restore a gated self-improvement"
+    )
+    improve.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "pending", "propose", "show", "approve", "reject", "restore", "undo", "history"],
+    )
+    improve.add_argument("request_id", nargs="?", default="", help="request id")
+    improve.add_argument(
+        "--task",
+        default="",
+        help="with propose: an optional focus for the improvement",
+    )
+    improve.add_argument(
+        "--yes", action="store_true", help="approve without the extra confirmation prompt"
+    )
+    improve.add_argument(
+        "--force", action="store_true", help="apply or restore over files changed since the proposal"
+    )
+    improve.add_argument("--json", action="store_true", help="machine-readable output")
+    add_common(improve)
 
     return parser
 
@@ -409,6 +563,10 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
         out["verbose"] = 0
     if getattr(args, "no_memory", False):
         out["memory"] = False
+    if getattr(args, "speak", False):
+        out["speak"] = True
+    if getattr(args, "voice", ""):
+        out["voice"] = args.voice
     if getattr(args, "council", False):
         out["council"] = True
     if getattr(args, "council_public", False):
@@ -429,6 +587,10 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
         out["review_lessons"] = False
     if getattr(args, "no_security_review", False):
         out["security_review"] = False
+    if getattr(args, "improve_when_idle", False):
+        out["self_improve_idle"] = True
+    if getattr(args, "idle_minutes", None) is not None:
+        out["self_improve_idle_minutes"] = max(0.05, float(args.idle_minutes))
     return out
 
 
@@ -605,6 +767,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for line in (result.summary or "").splitlines():
         print("  " + line)
     print()
+    ui.speak(result.summary or "")
     if result.changed:
         ui.ok(f"{len(result.changed)} file(s) changed: {', '.join(result.changed[:8])}")
     if result.verify_ok is True:
@@ -629,6 +792,210 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.verify_ok is not False else 1
 
 
+def cmd_improve(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    action = (getattr(args, "action", "list") or "list").lower()
+    request_id = str(getattr(args, "request_id", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    improver = SelfImprover(workspace, config, None, ui)
+
+    try:
+        if action == "propose":
+            provider = connect(config, ui)
+            if provider is None:
+                return 2
+            improver.provider = provider
+            request = improver.propose(
+                hint=str(getattr(args, "task", "") or ""), source="manual"
+            )
+            if as_json:
+                print(json.dumps({"request": request.data}, indent=2))
+            else:
+                print(SelfImprover.describe(request, include_diff=False))
+                print()
+                ui.info(f"review the diff: offgrid improve show {request.id}")
+                ui.info(f"approve it:     offgrid improve approve {request.id}")
+                ui.info(f"reject it:      offgrid improve reject {request.id}")
+            return 0
+
+        if action in ("list", "pending", "history"):
+            requests = improver.all_requests()
+            if action in ("list", "pending"):
+                waiting = [item for item in requests if item.state == "pending"]
+            else:
+                waiting = []
+            recent = [item for item in requests if item.state != "pending"]
+            if action == "pending":
+                recent = []
+            if as_json:
+                print(
+                    json.dumps(
+                        {
+                            "pending": [item.data for item in waiting],
+                            "requests": [item.data for item in recent[:25]],
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            if not waiting and not recent:
+                ui.info("no self-improvement requests yet")
+                ui.info("create one: offgrid improve propose")
+                return 0
+            if waiting:
+                print()
+                print(ui.paint("  waiting for your approval", "\033[1m"))
+                for item in waiting:
+                    print(
+                        f"  {item.id}  {str(item.data.get('summary') or '(no summary)').strip()[:120]}"
+                    )
+            if recent:
+                print()
+                print(ui.paint("  recent requests", "\033[1m"))
+                for item in recent[:25]:
+                    print(f"  {item.id}  [{item.state}]  {_request_files(item)}")
+            if waiting:
+                print()
+                ui.info(f"review one: offgrid improve show {waiting[0].id}")
+            return 0
+
+        if action == "show":
+            request = improver.get(request_id)
+            if as_json:
+                print(json.dumps(request.data, indent=2))
+            else:
+                print(SelfImprover.describe(request))
+            return 0
+
+        if action == "reject":
+            request = improver.reject(request_id)
+            if as_json:
+                print(json.dumps({"request": request.data}, indent=2))
+            else:
+                ui.ok(f"rejected {request.id}; the live workspace was not changed")
+            return 0
+
+        if action == "approve":
+            request = improver.get(request_id)
+            if not as_json:
+                print(SelfImprover.describe(request))
+            if not getattr(args, "yes", False):
+                if not sys.stdin.isatty():
+                    ui.error("refusing to apply without confirmation; pass --yes")
+                    return 2
+                print()
+                answer = input("  type 'approve' to apply this request: ").strip().lower()
+                if answer != "approve":
+                    ui.info("cancelled; the live workspace was not changed")
+                    return 0
+            request = improver.approve(request_id, force=bool(getattr(args, "force", False)))
+            if as_json:
+                print(json.dumps({"request": request.data}, indent=2))
+            elif request.state == "applied":
+                ui.ok(
+                    f"applied {request.id}; request files are snapshotted and can be restored with"
+                    f" offgrid improve restore {request.id}"
+                )
+                if request.data.get("verify_ok") is True:
+                    ui.ok("verification passed")
+                else:
+                    ui.warn("the change is applied but was not verified")
+            else:
+                ui.error(f"{request.id} was rolled back: {request.data.get('failure') or 'verification failed'}")
+            return 0 if request.state == "applied" else 1
+
+        if action in ("restore", "undo"):
+            if action == "undo":
+                request = improver.latest_applied()
+                if request is None:
+                    raise ImproveError("there is no applied self-improvement request to undo")
+            else:
+                request = improver.get(request_id)
+            if not as_json:
+                print(SelfImprover.describe(request, include_diff=False))
+            request = improver.restore(request.id, force=bool(getattr(args, "force", False)))
+            if as_json:
+                print(json.dumps({"request": request.data}, indent=2))
+            else:
+                ui.ok(f"restored {request.id} to its pre-approval version")
+            return 0
+
+        raise ImproveError(f"unknown improve action: {action}")
+    except ProviderError as exc:
+        ui.error(str(exc))
+        return 2
+    except ImproveError as exc:
+        ui.error(str(exc))
+        return 1
+    except KeyboardInterrupt:
+        ui.warn("interrupted")
+        return 130
+    except OSError as exc:
+        ui.error(str(exc))
+        return 1
+
+
+def cmd_maintain(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .maintenance import MaintenanceLoop, Maintainer
+
+    interval = (
+        config.maintenance_interval
+        if getattr(args, "interval", None) is None
+        else args.interval
+    )
+    if interval <= 0:
+        ui.error("--interval must be greater than zero")
+        return 2
+    retention = (
+        config.self_improve_retention_days
+        if getattr(args, "retention_days", None) is None
+        else args.retention_days
+    )
+    if retention < 0:
+        ui.error("--retention-days cannot be negative")
+        return 2
+    keep = config.self_improve_keep if getattr(args, "keep", None) is None else args.keep
+    if keep < 0:
+        ui.error("--keep cannot be negative")
+        return 2
+
+    provider = None
+    provider_error = ""
+    try:
+        provider = open_provider(config)
+    except ProviderError as exc:
+        provider_error = str(exc)
+
+    improver = SelfImprover(workspace, config, provider, ui)
+    maintainer = Maintainer(
+        workspace,
+        config,
+        improver,
+        provider=provider,
+        provider_error=provider_error,
+        ui=ui,
+        retention_days=retention,
+        keep=keep,
+    )
+    loop = MaintenanceLoop(
+        maintainer,
+        interval=interval,
+        improve=bool(getattr(args, "improve", False) or config.maintenance_improve),
+        as_json=bool(getattr(args, "json", False)),
+        ui=ui,
+    )
+    if getattr(args, "once", False):
+        report = loop.run_once()
+        return 0 if report.healthy else 1
+    return loop.run_forever()
+
+
+def _request_files(request) -> str:
+    files = [str(item.get("path") or "") for item in (request.data.get("files") or [])]
+    return ", ".join(files[:5]) or "no files"
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
     provider = connect(config, ui)
@@ -637,6 +1004,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
     session = SessionLog(workspace.root, config.session_dir)
     team = Team(provider, workspace, config, ui, **build_services(config, workspace))
     team.session_source = session.session_id
+    improver = SelfImprover(workspace, config, provider, ui)
+    watcher = None
+    if config.self_improve_idle:
+        def _notify_idle(request) -> None:
+            if config.verbose >= 1:
+                print(
+                    f"\n  self-improvement request {request.id} is waiting; "
+                    f"review it with `offgrid improve show {request.id}`.\n",
+                    flush=True,
+                )
+
+        watcher = IdleWatcher(
+            improver,
+            config.self_improve_idle_minutes,
+            notify=_notify_idle,
+        )
+        watcher.start()
+        ui.info(
+            f"self-improvement: after {config.self_improve_idle_minutes:g} quiet minutes, "
+            "a pending request may be prepared; it will never apply without your approval"
+        )
     ui.info(
         f"effort: {team.effort.name}"
         + (
@@ -658,13 +1046,19 @@ def cmd_chat(args: argparse.Namespace) -> int:
             line = ui.ask(ui.paint("you> ", "\033[1m", "\033[36m"))
         except (EOFError, KeyboardInterrupt):
             print()
+            if watcher:
+                watcher.stop()
             break
         task = line.strip()
+        if watcher:
+            watcher.touch()
         if not task:
             continue
         if task.startswith("/"):
             command, _, rest = task[1:].partition(" ")
             if command in ("quit", "exit", "q"):
+                if watcher:
+                    watcher.stop()
                 break
             if command == "help":
                 ui.info("/diff           show what changed in this session")
@@ -673,6 +1067,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ui.info("/agents         show the team")
                 ui.info("/memory [q]     what the agent remembers")
                 ui.info("/library        offline library contents")
+                ui.info("/improve        pending self-improvement requests")
                 ui.info("/status         model, endpoint, settings")
                 ui.info("/quit           leave")
                 continue
@@ -695,6 +1090,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ui.info(f"{stats['files']} document(s): {stats['categories'] or 'none'}")
                 ui.info("fill it with: python3 scripts/fetch_library.py --get survival coding")
                 continue
+            if command == "improve":
+                pending = improver.pending()
+                if not pending:
+                    ui.info("no self-improvement request is waiting for approval")
+                    ui.info("create one: offgrid improve propose")
+                else:
+                    for item in pending:
+                        print(
+                            f"  {item.id}  {str(item.data.get('summary') or '(no summary)').strip()[:120]}"
+                        )
+                    ui.info(f"review/approve outside chat: offgrid improve show {pending[0].id}")
+                continue
             if command == "verify":
                 if rest.strip():
                     config.verify_command = rest.strip()
@@ -711,25 +1118,29 @@ def cmd_chat(args: argparse.Namespace) -> int:
             ui.warn(f"unknown command /{command}")
             continue
 
-        try:
-            result = team.run(task, verify_override=config.verify_command)
-        except ProviderError as exc:
-            ui.error(str(exc))
-            continue
-        except KeyboardInterrupt:
-            ui.warn("interrupted; workspace changes are kept")
-            continue
-        session.record_run(result)
-        ui.rule()
-        for line_text in (result.summary or "").splitlines():
-            print("  " + line_text)
-        if result.changed:
-            ui.info("changed: " + ", ".join(result.changed[:8]))
-        for line in result.disclosures:
-            ui.info(line)
-        review_new_lessons(config, ui, team)
-        ui.rule()
+        with (watcher.busy() if watcher else nullcontext()):
+            try:
+                result = team.run(task, verify_override=config.verify_command)
+            except ProviderError as exc:
+                ui.error(str(exc))
+                continue
+            except KeyboardInterrupt:
+                ui.warn("interrupted; workspace changes are kept")
+                continue
+            session.record_run(result)
+            ui.rule()
+            for line_text in (result.summary or "").splitlines():
+                print("  " + line_text)
+            if result.changed:
+                ui.info("changed: " + ", ".join(result.changed[:8]))
+            ui.speak(result.summary or "")
+            for line in result.disclosures:
+                ui.info(line)
+            review_new_lessons(config, ui, team)
+            ui.rule()
 
+    if watcher:
+        watcher.stop()
     ui.info(f"session log: {session.path}")
     return 0
 
@@ -755,37 +1166,127 @@ def _print_readiness(report: Any, ui: UI, heading: str = "") -> None:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
+    as_json = bool(getattr(args, "json", False))
+    git_repo = (workspace.root / ".git").exists()
+    capability = probe(config.workspace)
+    runs = recommend(capability)
+    effort = resolve_effort(config)
+    capacity = capacity_for(capability) if config.scale else None
+    if capacity is not None:
+        effort = adjust_effort(effort, capacity)
+    from .fleet import Fleet
+
+    fleet = Fleet(config).load()
+    live = fleet.available(limit=9, timeout=1) if fleet.peers else []
+    found = discover(config)
+    endpoint_answering = bool(
+        config.endpoint and any(endpoint == config.endpoint for endpoint, _ in found)
+    )
+    workspace_config = (workspace.root / ".offgrid.json").is_file()
+    from .semantics import load_lexicon
+
+    lexicon_path = Path(workspace.root) / config.lexicon_file
+    lexicon = load_lexicon(lexicon_path)
+    strict = bool(getattr(args, "strict", False))
+    strict_failed = strict and bool(lexicon.warnings)
+    from . import primary as primary_module
+
+    signing_key_path = (
+        Path(args.sign_key).expanduser() if getattr(args, "sign_key", "") else None
+    )
+    readiness = primary_module.readiness(
+        config, workspace.root, signing_key_path=signing_key_path
+    )
+    exit_code = 0 if found or config.endpoint else 1
+    if strict_failed:
+        exit_code = 1
+
+    if as_json:
+        payload = {
+            "version": __version__,
+            "python": sys.version.split()[0],
+            "platform": sys.platform,
+            "workspace": str(workspace.root),
+            "git": git_repo,
+            "config": {
+                "endpoint": config.resolved_endpoint(),
+                "model": config.model,
+                "parallel": config.parallel,
+                "max_turns": config.max_turns,
+                "temperature": config.temperature,
+                "command_policy": config.command_policy,
+                "network": config.network,
+                "offline": config.offline,
+                "allow_remote": config.allow_remote,
+                "effort": config.effort,
+                "memory": config.memory,
+                "scale": config.scale,
+                "fleet": config.fleet,
+                "council": config.council,
+            },
+            "hardware": capability.as_dict(),
+            "runs": runs,
+            "capacity": capacity.as_dict() if capacity is not None else None,
+            "effort": effort.as_dict(),
+            "fleet": {
+                "configured": len(fleet.peers),
+                "answering": len(live),
+                "peers": [
+                    {
+                        "name": peer.name,
+                        "url": peer.url,
+                        "tier": peer.tier,
+                        "reachable": peer.healthy,
+                    }
+                    for peer in fleet.peers
+                ],
+            },
+            "servers": [
+                {"endpoint": endpoint, "models": list(names)}
+                for endpoint, names in found
+            ],
+            "configured_endpoint": config.endpoint,
+            "configured_endpoint_answering": endpoint_answering,
+            "workspace_config": workspace_config,
+            "lexicon": {
+                "path": str(lexicon_path),
+                "source": lexicon.source,
+                "found": lexicon_path.is_file(),
+                "warnings": list(lexicon.warnings),
+                "strict": strict,
+                "strict_failed": strict_failed,
+            },
+            "lexicon_warnings": list(lexicon.warnings),
+            "strict": strict,
+            "strict_failed": strict_failed,
+            "continuity": readiness.as_dict(),
+            "exit_code": exit_code,
+        }
+        print(json.dumps(payload, indent=2))
+        return exit_code
+
     print()
     print(ui.paint(f"  OffGrid {__version__} doctor", "\033[1m"))
     print()
     print(f"  python      {sys.version.split()[0]}")
     print(f"  platform    {sys.platform}")
     print(f"  workspace   {workspace.root}")
-    print(f"  git         {'yes' if (workspace.root / '.git').exists() else 'no'}")
+    print(f"  git         {'yes' if git_repo else 'no'}")
     print(f"  config      {config.describe()}")
-    capability = probe(config.workspace)
     print(f"  hardware    {capability.tier}, {capability.cpu_count} cores, {capability.ram_gb:g} GB RAM, "
           + (", ".join(capability.accelerators) or "no GPU"))
-    print(f"  runs        {recommend(capability)}")
-    effort = resolve_effort(config)
-    if config.scale:
-        capacity = capacity_for(capability)
-        effort = adjust_effort(effort, capacity)
+    print(f"  runs        {runs}")
+    if capacity is not None:
         print(f"  capacity    {describe_capacity(capacity, effort)}")
     print(f"  effort      {effort.name}: {effort.description}")
-    from .fleet import Fleet
-
-    fleet = Fleet(config).load()
     if not fleet.peers:
         print("  fleet       off, no peers registered")
     else:
-        live = fleet.available(limit=9, timeout=1)
         print(f"  fleet       {len(live)}/{len(fleet.peers)} peer(s) answering: "
               + (", ".join(f"{peer.name} ({peer.tier or '?'})" for peer in live) or "none right now"))
     print()
 
     print("  scanning localhost for model servers...")
-    found = discover(config)
     if not found:
         ui.warn("no local model server found")
         ui.info("install one (all free):")
@@ -797,28 +1298,32 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for endpoint, names in found:
             ui.ok(f"{endpoint}  models: {', '.join(names[:6]) or '(none)'}")
 
-    if config.endpoint and not any(endpoint == config.endpoint for endpoint, _ in found):
+    if config.endpoint and not endpoint_answering:
         ui.warn(f"configured endpoint {config.endpoint} is not answering")
 
     print()
     print("  checks")
-    if (workspace.root / ".offgrid.json").is_file():
+    if workspace_config:
         ui.ok("workspace config found")
     else:
         ui.info("no .offgrid.json in the workspace (optional)")
     if config.command_policy == "deny":
         ui.info("shell access disabled by configuration")
-    from . import primary as primary_module
+    if lexicon.warnings:
+        ui.warn(f"project lexicon: {len(lexicon.warnings)} warning(s)")
+        for warning in lexicon.warnings:
+            ui.info(warning)
+        ui.info("recommended: offgrid lexicon --strict")
+    elif lexicon.source:
+        ui.ok("project lexicon: no warnings")
+    else:
+        ui.info("no project lexicon in the workspace (optional)")
 
-    signing_key_path = (
-        Path(args.sign_key).expanduser() if getattr(args, "sign_key", "") else None
-    )
-    readiness = primary_module.readiness(
-        config, workspace.root, signing_key_path=signing_key_path
-    )
     _print_readiness(readiness, ui, heading="continuity")
     print()
-    return 0 if found or config.endpoint else 1
+    if strict_failed:
+        ui.warn("strict mode: project lexicon warnings are a failure")
+    return exit_code
 
 
 def cmd_models(args: argparse.Namespace) -> int:
@@ -838,6 +1343,12 @@ def cmd_models(args: argparse.Namespace) -> int:
         marker = "*" if name == provider.model else " "
         print(f" {marker} {name}")
     return 0
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    from .demo import run_demo
+
+    return run_demo(color=not bool(getattr(args, "no_color", False)))
 
 
 def cmd_agents(args: argparse.Namespace) -> int:
@@ -868,6 +1379,13 @@ def cmd_memory(args: argparse.Namespace) -> int:
     )
     action = (args.action or "list").lower()
     terms = " ".join(getattr(args, "terms", []) or []).strip()
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run and action not in ("forgive", "forget"):
+        ui.error(
+            "--dry-run is only valid with `offgrid memory forgive` or "
+            "`offgrid memory forget`"
+        )
+        return 2
 
     if action == "stats":
         print(json.dumps(store.stats(), indent=2))
@@ -899,7 +1417,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
     if action in ("accept", "reject", "forgive"):
         if not terms:
             usage = (
-                "offgrid memory forgive ID [ID...] | TEXT [QUERY]"
+                "offgrid memory forgive ID [ID...] | TEXT [QUERY] [--dry-run]"
                 if action == "forgive"
                 else f"offgrid memory {action} ID [ID...]"
             )
@@ -907,7 +1425,21 @@ def cmd_memory(args: argparse.Namespace) -> int:
             return 2
         id_terms = terms.split()
         if action == "forgive" and not all(term.isdigit() for term in id_terms):
-            changed = store.forgive_matching(terms)
+            matches = store.matching_rejections(terms)
+            if not matches:
+                ui.error(f"no rejection ledger entry matches: {terms}")
+                return 1
+            print(f"matched {len(matches)} rejection record(s) for {terms!r}:")
+            for item in matches:
+                print("  " + item.line())
+            print()
+            if dry_run:
+                print(
+                    f"dry run: would forgive {len(matches)} rejection record(s); "
+                    "nothing was removed"
+                )
+                return 0
+            changed = store.forgive([item.id for item in matches])
             if changed:
                 print(
                     f"forgave {changed} rejection record(s) matching {terms!r}; "
@@ -920,6 +1452,20 @@ def cmd_memory(args: argparse.Namespace) -> int:
         if not ids:
             ui.error(f"which lesson? usage: offgrid memory {action} ID [ID...]")
             return 2
+        if action == "forgive" and dry_run:
+            matches = store.rejections_by_id(ids)
+            if not matches:
+                ui.error(f"no rejection ledger entry matches: {terms}")
+                return 1
+            print(f"matched {len(matches)} rejection record(s) for {terms!r}:")
+            for item in matches:
+                print("  " + item.line())
+            print()
+            print(
+                f"dry run: would forgive {len(matches)} rejection record(s); "
+                "nothing was removed"
+            )
+            return 0
         if action == "accept":
             changed = store.accept(ids)
         elif action == "reject":
@@ -956,6 +1502,27 @@ def cmd_memory(args: argparse.Namespace) -> int:
         return 0
     if action == "forget":
         ids = [int(term) for term in terms.split() if term.isdigit()]
+        if dry_run:
+            if not ids:
+                ui.error("which entry? usage: offgrid memory forget ID [ID...]")
+                return 2
+            matches = []
+            for ident in dict.fromkeys(ids):
+                item = store.get(ident)
+                if item is not None:
+                    matches.append(item)
+            if not matches:
+                ui.error(f"no memory entry matches: {terms}")
+                return 1
+            print(f"matched {len(matches)} active memory record(s) for {terms!r}:")
+            for item in matches:
+                print("  " + item.line())
+            print()
+            print(
+                f"dry run: would forget {len(matches)} active memory record(s); "
+                "nothing was removed"
+            )
+            return 0
         removed = sum(1 for ident in ids if store.forget(ident))
         print(f"forgot {removed} entr{'y' if removed == 1 else 'ies'}")
         return 0 if removed else 1
@@ -1451,6 +2018,10 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         address = lan_address() or "this-host"
         print()
         ui.ok(f"serving this machine's model on port {port} (LAN only, token required)")
+        ui.warn(
+            "fleet traffic is cleartext HTTP, not TLS: use it only on a trusted private "
+            "LAN, never expose the port to the internet, and keep the bearer token private"
+        )
         ui.info(f"  info:   http://{address}:{port}/fleet/info")
         ui.info(f"  add:    offgrid fleet add <name> http://{address}:{port} --token {token}")
         ui.info("  ctrl-c to stop")
@@ -1886,6 +2457,37 @@ def cmd_protect(args: argparse.Namespace) -> int:
         return 0 if report.ready else 1
 
     backup_paths = getattr(args, "backup", []) or []
+    restore_path = getattr(args, "restore", None)
+    if restore_path:
+        if backup_paths:
+            ui.error("--restore cannot be combined with --backup; choose one source")
+            return 2
+        kit_dest = Path(args.out).expanduser() if args.out else None
+        model_dest = Path(args.model_out).expanduser() if args.model_out else None
+        try:
+            restored = primary_module.restore_backup(
+                config,
+                workspace.root,
+                Path(restore_path),
+                kit_path=kit_dest,
+                model_path=model_dest,
+                force=bool(args.force),
+                signing_key_path=signing_key_path,
+            )
+        except primary_module.BackupError as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(restored.as_dict(), indent=2))
+        else:
+            ui.ok(f"restored a verified backup from {restored.source}")
+            ui.info(f"  kit: {restored.kit_path}")
+            ui.info(f"  model: {restored.model_path}")
+            ui.info(f"  manifest: {restored.manifest}")
+            if restored.signed:
+                ui.info("  the backup's manifest signature was verified")
+        return 0
+
     if sign_key_arg and getattr(args, "kit", False):
         ui.error("--sign-key cannot be combined with --kit; use it with --backup or --check")
         return 2
@@ -1953,13 +2555,11 @@ def cmd_protect(args: argparse.Namespace) -> int:
             ui.error(f"{target} already exists; pass --force to replace it")
             return 1
         text = primary_module.continuity_kit(config, workspace.root)
+        from .private import ensure_private_dir, write_private_text
+
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
-            try:
-                target.chmod(0o600)
-            except OSError:
-                pass
+            ensure_private_dir(target.parent)
+            write_private_text(target, text)
         except OSError as exc:
             ui.error(f"could not write {target}: {exc}")
             return 1
@@ -2001,8 +2601,6 @@ def cmd_protect(args: argparse.Namespace) -> int:
 
 def _full_bundle_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
     """Build the large, genuinely offline bundle on a chosen mounted device."""
-    import shutil
-
     from . import fullbundle, portable
 
     print()
@@ -2045,22 +2643,23 @@ def _full_bundle_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
     if destination.exists():
         ui.error(f"{destination} already exists; choose another folder")
         return 1
-    model = input("  model [7b] (3b/7b/14b): ").strip().lower() or "7b"
+    model = input("  model [7b] (3b/7b/14b/35b/80b): ").strip().lower() or "7b"
     if model not in fullbundle.MODELS:
         ui.error(f"unknown model '{model}'; choose from: {', '.join(fullbundle.MODELS)}")
         return 2
-    needed = fullbundle.estimate_download_gb(model)
-    free = shutil.disk_usage(device).free / (1024 ** 3)
-    if free < needed:
-        ui.error(
-            f"not enough free space on {device}: need about {needed:.1f} GB, "
-            f"have {free:.1f} GB"
-        )
+    warning = fullbundle.ram_warning(model)
+    if warning:
+        ui.warn(warning)
+    needed = fullbundle.estimate_required_space_gb(model)
+    try:
+        fullbundle.ensure_free_space(device, needed)
+    except fullbundle.FullBundleError as exc:
+        ui.error(str(exc))
         return 1
     print()
     print(f"  build     {destination}")
     print(f"  model     {model} (~{fullbundle.MODELS[model]['gb']} GB download)")
-    print(f"  download  about {needed:.1f} GB total; this can take a while")
+    print(f"  space     about {needed:.1f} GB required (download plus safety margin)")
     print("  This writes into mounted storage. It is not a raw block-device flash.")
     try:
         answer = input("  type 'build' to continue: ").strip().lower()
@@ -2134,7 +2733,7 @@ def _distribution_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
             ui.error("no target given")
             return 2
         default = portable.find_default_bundle() or portable.DEFAULT_BUNDLE
-        raw_bundle = input(f"  bundle [{default}]: ").strip()
+        raw_bundle = input(f"  bundle zip, pyz, or full-bundle directory [{default}]: ").strip()
         bundle = Path(raw_bundle) if raw_bundle else default
         print(f"  install {bundle} into {target}")
         print("  This copies files to mounted storage; it is not a raw disk flash.")
@@ -2145,8 +2744,20 @@ def _distribution_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
         if answer != "install":
             ui.info("cancelled")
             return 0
+        target_path = Path(target)
         try:
-            destination = portable.install_bundle(bundle, Path(target))
+            print(f"  checking drive {target_path}...")
+            report = portable.check_usb_drive(
+                target_path,
+                bundle,
+                require_exfat=portable.is_mount_point(target_path),
+            )
+            print(f"  drive check: {report.filesystem}, {report.free_gb:.1f} GB free")
+            if report.model_files:
+                print(f"  model SHA-256 verified: {', '.join(report.model_files)}")
+            else:
+                print("  model checksum: not applicable (no model in this bundle)")
+            destination = portable.install_bundle(bundle, target_path)
         except (portable.PortableError, OSError) as exc:
             ui.error(str(exc))
             return 1
@@ -2155,6 +2766,17 @@ def _distribution_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
 
     ui.error("unknown choice")
     return 2
+
+
+def _print_drive_report(ui: UI, report: Any) -> None:
+    ui.ok(f"drive ready: {report.target}")
+    print(f"  filesystem  {report.filesystem}")
+    print(f"  free        {report.free_gb:.1f} GB")
+    print(f"  required    {report.required_gb:.1f} GB")
+    if report.model_files:
+        print(f"  model       {', '.join(report.model_files)} (SHA-256 verified)")
+    else:
+        print("  model       none in this bundle; checksum not applicable")
 
 
 def cmd_distribute(args: argparse.Namespace) -> int:
@@ -2169,6 +2791,7 @@ def cmd_distribute(args: argparse.Namespace) -> int:
             getattr(args, "build", None) is not None,
             getattr(args, "list_devices", False),
             bool(getattr(args, "to", "")),
+            bool(getattr(args, "check_drive", "")),
         )
     ):
         return _distribution_wizard(ui, workspace.root)
@@ -2186,6 +2809,26 @@ def cmd_distribute(args: argparse.Namespace) -> int:
             if not args.json:
                 ui.ok(f"portable zip: {zip_path}")
                 ui.ok(f"single-file app: {pyz_path}")
+
+        if getattr(args, "check_drive", ""):
+            check_bundle = (
+                Path(args.bundle)
+                if args.bundle
+                else (built_zip or portable.find_default_bundle())
+            )
+            if check_bundle is None:
+                ui.error("no bundle found; pass --bundle PATH or build one with --build")
+                return 1
+            if not args.json:
+                print(f"  checking drive {args.check_drive}...")
+            report = portable.check_usb_drive(Path(args.check_drive), check_bundle)
+            payload["drive_check"] = report.as_dict()
+            if not args.json:
+                _print_drive_report(ui, report)
+            if not getattr(args, "to", ""):
+                if args.json:
+                    print(json.dumps(payload, indent=2))
+                return 0
 
         if getattr(args, "list_devices", False):
             devices = portable.connected_devices()
@@ -2211,8 +2854,25 @@ def cmd_distribute(args: argparse.Namespace) -> int:
                 if answer != "install":
                     ui.info("cancelled")
                     return 0
+            target = Path(args.to)
+            if not args.json:
+                print(f"  checking drive {target}...")
+            report = portable.check_usb_drive(
+                target,
+                bundle,
+                require_exfat=portable.is_mount_point(target),
+            )
+            if not args.json:
+                print(
+                    f"  drive check: {report.filesystem}, "
+                    f"{report.free_gb:.1f} GB free"
+                )
+                if report.model_files:
+                    print(f"  model SHA-256 verified: {', '.join(report.model_files)}")
+                else:
+                    print("  model checksum: not applicable (no model in this bundle)")
             destination = portable.install_bundle(
-                bundle, Path(args.to), force=args.force, dry_run=args.dry_run
+                bundle, target, force=args.force, dry_run=args.dry_run
             )
             payload["installed"] = str(destination)
             if not args.json:
@@ -2258,6 +2918,9 @@ def cmd_trust(args: argparse.Namespace) -> int:
 COMMANDS = {
     "run": cmd_run,
     "chat": cmd_chat,
+    "improve": cmd_improve,
+    "maintain": cmd_maintain,
+    "demo": cmd_demo,
     "doctor": cmd_doctor,
     "models": cmd_models,
     "agents": cmd_agents,

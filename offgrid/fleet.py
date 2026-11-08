@@ -399,9 +399,11 @@ def load_or_create_token(config: Config) -> str:
         pass
     token = secrets.token_urlsafe(24)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from .private import ensure_private_dir, harden_file
+
+        ensure_private_dir(path.parent)
         path.write_text(token + "\n", encoding="utf-8")
-        os.chmod(path, 0o600)
+        harden_file(path)
     except OSError:
         pass
     return token

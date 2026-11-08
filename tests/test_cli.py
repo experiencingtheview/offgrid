@@ -158,6 +158,114 @@ class CliTests(unittest.TestCase):
         self.assertIn("continuity", proc.stdout)
         self.assertIn("ready for a continuity handoff", proc.stdout)
 
+    def test_doctor_reports_project_lexicon_warnings_and_strict_validation(self):
+        model = serve([])
+        self.addCleanup(model.stop)
+        path = self.root / ".offgrid" / "lexicon.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"groups": {"billing": ["ship"]}}), encoding="utf-8"
+        )
+
+        proc = self.run_cli("doctor", "--endpoint", model.url, "--no-color")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("project lexicon: 2 warning(s)", proc.stdout)
+        self.assertIn("already belongs to 'deploy'", proc.stdout)
+        self.assertIn("recommended: offgrid lexicon --strict", proc.stdout)
+        self.assertLess(
+            proc.stdout.index("already belongs to 'deploy'"),
+            proc.stdout.index("recommended: offgrid lexicon --strict"),
+        )
+
+        strict_proc = self.run_cli(
+            "doctor", "--strict", "--endpoint", model.url, "--no-color"
+        )
+        self.assertEqual(strict_proc.returncode, 1, strict_proc.stderr)
+        self.assertIn("project lexicon: 2 warning(s)", strict_proc.stdout)
+        self.assertIn(
+            "strict mode: project lexicon warnings are a failure", strict_proc.stdout
+        )
+
+    def test_doctor_strict_passes_without_lexicon_warnings(self):
+        model = serve([])
+        self.addCleanup(model.stop)
+        path = self.root / ".offgrid" / "lexicon.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"groups": {"billing": ["invoice", "receipt"]}}),
+            encoding="utf-8",
+        )
+
+        proc = self.run_cli(
+            "doctor", "--strict", "--endpoint", model.url, "--no-color"
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("project lexicon: no warnings", proc.stdout)
+
+    def test_doctor_json_reports_lexicon_warnings_and_strict_status(self):
+        model = serve([])
+        self.addCleanup(model.stop)
+        path = self.root / ".offgrid" / "lexicon.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"groups": {"billing": ["ship"]}}), encoding="utf-8"
+        )
+
+        proc = self.run_cli(
+            "doctor",
+            "--json",
+            "--strict",
+            "--endpoint",
+            model.url,
+            "--no-color",
+        )
+
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertTrue(proc.stdout.lstrip().startswith("{"))
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["strict"])
+        self.assertTrue(payload["strict_failed"])
+        self.assertTrue(payload["lexicon"]["strict"])
+        self.assertTrue(payload["lexicon"]["strict_failed"])
+        self.assertEqual(payload["exit_code"], 1)
+        self.assertEqual(payload["lexicon"]["warnings"], payload["lexicon_warnings"])
+        self.assertEqual(len(payload["lexicon"]["warnings"]), 2)
+        self.assertIn(
+            "already belongs to 'deploy'",
+            " ".join(payload["lexicon"]["warnings"]),
+        )
+        self.assertNotIn("api_key", payload["config"])
+        self.assertNotIn("fleet_token", payload["config"])
+
+    def test_doctor_json_without_lexicon_warnings_is_clean(self):
+        model = serve([])
+        self.addCleanup(model.stop)
+        path = self.root / ".offgrid" / "lexicon.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps({"groups": {"billing": ["invoice", "receipt"]}}),
+            encoding="utf-8",
+        )
+
+        proc = self.run_cli(
+            "doctor",
+            "--json",
+            "--strict",
+            "--endpoint",
+            model.url,
+            "--no-color",
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertTrue(payload["strict"])
+        self.assertFalse(payload["strict_failed"])
+        self.assertEqual(payload["lexicon"]["warnings"], [])
+        self.assertEqual(payload["lexicon_warnings"], [])
+        self.assertEqual(payload["exit_code"], 0)
+
     def test_missing_workspace_is_rejected(self):
         proc = self.run_cli("run", "x", "--workspace", "nope", "--no-color")
         self.assertNotEqual(proc.returncode, 0)
@@ -261,6 +369,152 @@ class CliTests(unittest.TestCase):
             ["Backups live in the backups directory"],
         )
         self.assertEqual(reopened.pending(), [])
+
+    def test_memory_forgive_shows_search_matches_before_removing_them(self):
+        store = MemoryStore(self.root / ".offgrid" / "memory.db")
+        first_text = "Always run pytest before the tests"
+        second_text = "Run pytest before the tests every time"
+        other_text = "Backups live in the backups directory"
+        first = store.remember(first_text, kind="lesson", status="pending")
+        second = store.remember(second_text, kind="lesson", status="pending")
+        other = store.remember(other_text, kind="lesson", status="pending")
+        store.reject([first, second, other])
+        store.close()
+
+        proc = self.run_cli(
+            "memory",
+            "forgive",
+            "pytest before tests",
+            "--workspace",
+            str(self.root),
+            "--no-color",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("matched 2 rejection record(s)", proc.stdout)
+        self.assertIn(first_text, proc.stdout)
+        self.assertIn(second_text, proc.stdout)
+        self.assertNotIn(other_text, proc.stdout)
+        self.assertLess(
+            proc.stdout.index(first_text),
+            proc.stdout.index("forgave 2 rejection record(s)"),
+        )
+        self.assertLess(
+            proc.stdout.index(second_text),
+            proc.stdout.index("forgave 2 rejection record(s)"),
+        )
+
+        reopened = MemoryStore(self.root / ".offgrid" / "memory.db")
+        self.addCleanup(reopened.close)
+        self.assertEqual([item.text for item in reopened.rejected()], [other_text])
+
+    def test_memory_forgive_dry_run_previews_search_matches_without_deleting(self):
+        store = MemoryStore(self.root / ".offgrid" / "memory.db")
+        first_text = "Always run pytest before the tests"
+        second_text = "Run pytest before the tests every time"
+        other_text = "Backups live in the backups directory"
+        first = store.remember(first_text, kind="lesson", status="pending")
+        second = store.remember(second_text, kind="lesson", status="pending")
+        other = store.remember(other_text, kind="lesson", status="pending")
+        store.reject([first, second, other])
+        store.close()
+
+        proc = self.run_cli(
+            "memory",
+            "forgive",
+            "pytest before tests",
+            "--dry-run",
+            "--workspace",
+            str(self.root),
+            "--no-color",
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("matched 2 rejection record(s)", proc.stdout)
+        self.assertIn(first_text, proc.stdout)
+        self.assertIn(second_text, proc.stdout)
+        self.assertNotIn(other_text, proc.stdout)
+        self.assertIn(
+            "dry run: would forgive 2 rejection record(s); nothing was removed",
+            proc.stdout,
+        )
+
+        reopened = MemoryStore(self.root / ".offgrid" / "memory.db")
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            {item.text for item in reopened.rejected()},
+            {first_text, second_text, other_text},
+        )
+
+    def test_memory_forgive_dry_run_by_id_previews_without_deleting(self):
+        store = MemoryStore(self.root / ".offgrid" / "memory.db")
+        first_text = "First wrong lesson"
+        second_text = "Second wrong lesson"
+        first = store.remember(first_text, kind="lesson", status="pending")
+        second = store.remember(second_text, kind="lesson", status="pending")
+        store.reject([first, second])
+        ids = [str(item.id) for item in store.rejected()]
+        store.close()
+
+        proc = self.run_cli(
+            "memory",
+            "forgive",
+            *ids,
+            "--dry-run",
+            "--workspace",
+            str(self.root),
+            "--no-color",
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("matched 2 rejection record(s)", proc.stdout)
+        self.assertIn(first_text, proc.stdout)
+        self.assertIn(second_text, proc.stdout)
+        self.assertIn(
+            "dry run: would forgive 2 rejection record(s); nothing was removed",
+            proc.stdout,
+        )
+
+        reopened = MemoryStore(self.root / ".offgrid" / "memory.db")
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            {item.text for item in reopened.rejected()},
+            {first_text, second_text},
+        )
+
+    def test_memory_forget_dry_run_previews_active_memories_without_deleting(self):
+        store = MemoryStore(self.root / ".offgrid" / "memory.db")
+        first_text = "Keep this active fact"
+        second_text = "Keep this other active fact"
+        first = store.remember(first_text, kind="fact")
+        second = store.remember(second_text, kind="fact")
+        store.close()
+
+        proc = self.run_cli(
+            "memory",
+            "forget",
+            str(first),
+            str(second),
+            "--dry-run",
+            "--workspace",
+            str(self.root),
+            "--no-color",
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("matched 2 active memory record(s)", proc.stdout)
+        self.assertIn(first_text, proc.stdout)
+        self.assertIn(second_text, proc.stdout)
+        self.assertIn(
+            "dry run: would forget 2 active memory record(s); nothing was removed",
+            proc.stdout,
+        )
+
+        reopened = MemoryStore(self.root / ".offgrid" / "memory.db")
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            {item.text for item in reopened.all()},
+            {first_text, second_text},
+        )
 
     def test_memory_forgive_reports_when_nothing_matches(self):
         store = MemoryStore(self.root / ".offgrid" / "memory.db")
