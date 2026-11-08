@@ -6,6 +6,9 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- A public, read-only CI status badge served by a small Sites Worker and D1
+  database. The Tests workflow publishes the latest `main` result without
+  exposing a GitHub token, so the badge works without a GitHub sign-in.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
