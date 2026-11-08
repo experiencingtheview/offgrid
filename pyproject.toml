@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offgrid"
+version = "0.1.0"
+description = "A free, offline, multi-agent coding team that runs against a local LLM."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "OffGrid contributors" }]
+keywords = ["ai", "agents", "offline", "local-llm", "coding-agent"]
+dependencies = []
+
+[project.scripts]
+offgrid = "offgrid.cli:main"
+
+[tool.setuptools]
+packages = ["offgrid"]

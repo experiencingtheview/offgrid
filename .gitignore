@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.offgrid/
+.pytest_cache/
+build/
+dist/
+
+# bundle output and large binaries
+offgrid-usb/
+models/
+runtime/
+logs/
+run/
+*.gguf
+*.part
+
+# secrets and encrypted archives
+.env
+.env.*
+!.env.example
+*.ogv
