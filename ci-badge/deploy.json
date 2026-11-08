@@ -1,0 +1,11 @@
+{
+  "entrypoint": "worker.js",
+  "compatibilityDate": "2026-11-08",
+  "modules": [
+    {
+      "name": "worker.js",
+      "type": "esm",
+      "path": "./worker.js"
+    }
+  ]
+}

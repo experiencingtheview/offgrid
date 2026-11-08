@@ -1,6 +1,6 @@
 # OffGrid
 
-[![Tests](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml)
+[![Tests](https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/badge.svg)](https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/)
 
 A **free, offline, multi-agent coding team** that runs on your own machine — from a laptop, or off a USB stick with no internet at all.
 
@@ -817,7 +817,7 @@ Every stage is tolerant: a planner that returns prose, a reviewer that returns g
 ## Development
 
 ```console
-python3 -m unittest discover -s tests -t .   # 505 tests, no network, no model
+python3 -m unittest discover -s tests -t .   # full suite, no network, no model
 python3 scripts/demo.py                      # full team run against a scripted model
 ```
 
@@ -832,6 +832,25 @@ Add a method plus a JSON schema in `offgrid/tools.py` and list it in `ALL_TOOLS`
 ### Adding an agent
 
 Add an `AgentSpec` to `ROSTER` in `offgrid/agents.py` with a role prompt in `offgrid/prompt.py`, and let the planner assign steps to it. Unknown role names from a planner are aliased, never fatal.
+
+## CI
+
+The [Tests workflow](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml)
+runs on every push, pull request, and manual dispatch. It checks:
+
+- the full suite on Python 3.9 (Ubuntu 22.04) and Python 3.12;
+- a clean wheel install and the portable bundle it builds and runs;
+- installed-wheel smoke tests on Windows and macOS.
+
+Run the same suite locally with:
+
+```console
+python3 -m unittest discover -s tests -t .
+```
+
+It needs no network, model server, API key or GPU. The badge is served by a
+public read-only status endpoint, and the workflow publishes the latest result
+for `main` there, so viewing it does not require a GitHub sign-in.
 
 ## Limits, honestly
 

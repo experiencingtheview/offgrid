@@ -102,3 +102,52 @@ jobs:
           offgrid --version
           offgrid-launch --version
           python -c "from offgrid._bundle import assets_root; raise SystemExit(0 if assets_root() else 1)"
+
+  badge:
+    name: Publish public CI status
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [test, package, platform-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish the result
+        continue-on-error: true
+        env:
+          STATUS_URL: https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/status
+          CI_BADGE_TOKEN: ${{ secrets.CI_BADGE_TOKEN }}
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          PLATFORM_RESULT: ${{ needs.platform-smoke.result }}
+        run: |
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ]; then
+            result=passing
+          else
+            result=failing
+          fi
+          python3 - "$STATUS_URL" "$result" <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          url, result = sys.argv[1], sys.argv[2]
+          body = json.dumps(
+              {
+                  "status": result,
+                  "sha": os.environ["GITHUB_SHA"],
+                  "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              }
+          ).encode("utf-8")
+          request = urllib.request.Request(
+              url,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": "Bearer " + os.environ["CI_BADGE_TOKEN"],
+                  "Content-Type": "application/json",
+                  "User-Agent": "OffGridCI/1.0",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=15) as response:
+              print(response.read().decode("utf-8"))
+          PY
