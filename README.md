@@ -1,5 +1,7 @@
 # OffGrid
 
+[![Tests](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml)
+
 A **free, offline, multi-agent coding team** that runs on your own machine — from a laptop, or off a USB stick with no internet at all.
 
 One local language model, split into a small engineering team that plans the work, writes the code, reviews it, runs the tests and reports back. No account, no API key, no subscription, no telemetry, no cloud.
