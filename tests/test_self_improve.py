@@ -9,11 +9,18 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import patch
 
 from offgrid.cli import main
 from offgrid.config import Config
 from offgrid.providers import LocalProvider
-from offgrid.self_improve import IdleWatcher, ImproveError, Request, SelfImprover
+from offgrid.self_improve import (
+    IdleWatcher,
+    ImproveError,
+    ImprovementTerminal,
+    Request,
+    SelfImprover,
+)
 from offgrid.ui import UI
 from offgrid.workspace import Workspace
 from tests.fake_llm import serve, text, tool, when
@@ -172,6 +179,69 @@ class SelfImproveTests(unittest.TestCase):
             code = main(["improve", "restore", request_id, *common])
         self.assertEqual(code, 0, output.getvalue())
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), OLD)
+
+    def test_interactive_terminal_proposes_without_touching_live_tree(self):
+        improver = self.improver()
+        terminal = ImprovementTerminal(improver, improver.ui)
+        output = StringIO()
+
+        with patch(
+            "builtins.input",
+            side_effect=["make the greeting clearer", "", "/quit"],
+        ):
+            with redirect_stdout(output):
+                code = terminal.run()
+
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), OLD)
+        pending = improver.pending()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].data["source"], "terminal")
+        self.assertIn("OffGrid self-improvement terminal", output.getvalue())
+
+    def test_interactive_terminal_applies_only_after_explicit_approval(self):
+        improver = self.improver()
+        request = improver.propose()
+        terminal = ImprovementTerminal(improver, improver.ui)
+        output = StringIO()
+
+        with patch(
+            "builtins.input",
+            side_effect=["/approve", "approve", "/quit"],
+        ):
+            with redirect_stdout(output):
+                code = terminal.run()
+
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), NEW)
+        self.assertEqual(improver.get(request.id).state, "applied")
+
+    def test_cli_opens_the_interactive_terminal(self):
+        self.model = serve(script())
+        common = [
+            "--workspace",
+            str(self.root),
+            "--endpoint",
+            self.model.url,
+            "--model",
+            "fake",
+            "--effort",
+            "fast",
+            "--no-color",
+        ]
+        output = StringIO()
+
+        with patch(
+            "builtins.input",
+            side_effect=["make the greeting clearer", "", "/quit"],
+        ):
+            with redirect_stdout(output):
+                code = main(["improve", "terminal", *common])
+
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), OLD)
+        requests = self.root / ".offgrid" / "self-improve" / "requests"
+        self.assertEqual(len([item for item in requests.iterdir() if item.is_dir()]), 1)
 
 
 class FakeImprover:

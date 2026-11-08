@@ -255,7 +255,7 @@ offgrid protect [--kit|--check|--backup PATH] whose side it is on, and a househo
 offgrid lexicon [--json] [--strict]          the merged meaning vocabulary
 offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
 offgrid desktop [install|remove|path]          put a shortcut on the desktop
-offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
+offgrid improve [terminal|list|propose|show|approve|reject|restore|undo]  gated self-improvement
 offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 offgrid config                               the fully resolved configuration
 ```
@@ -510,6 +510,21 @@ $ offgrid improve show 20261108-143012-a1b2c3   # full diff
 $ offgrid improve approve 20261108-143012-a1b2c3
 $ offgrid improve reject 20261108-143012-a1b2c3
 ```
+
+For an interactive vibe-coding pass, open the self-improvement terminal:
+
+```console
+$ offgrid improve terminal
+improve> add a small test for the config loader
+...
+  type 'approve' to apply, 'reject' to discard, or Enter to keep pending:
+```
+
+Each plain-language line asks the team for one proposal. It works in the same
+private copy, prints the diff, and asks before touching the live tree. `/list`,
+`/show`, `/approve`, `/reject`, `/restore`, and `/quit` are available. Proposal
+generation uses no network or shell commands, so it works offline with the
+local model.
 
 `approve` prints the diff and asks you to type `approve`; `--yes` is the
 non-interactive equivalent. It refuses if a live file changed after the proposal

@@ -692,6 +692,253 @@ class SelfImprover:
         return request
 
 
+class ImprovementTerminal:
+    """Interactive, offline-first front end for the gated workflow.
+
+    A plain-language line asks the team for one proposal. The team works in a
+    private copy, and the live tree is untouched until the user explicitly
+    approves the request. The terminal never applies a proposal automatically.
+    """
+
+    HELP = """\
+  describe a change in plain language
+  /help             show this help
+  /list             list pending and recent requests
+  /show [ID]        show a request and its diff
+  /approve [ID]     review and apply a pending request
+  /reject [ID]      discard a pending request
+  /restore [ID]     undo an applied request
+  /quit             leave without applying anything
+"""
+
+    def __init__(self, improver: SelfImprover, ui: UI) -> None:
+        self.improver = improver
+        self.ui = ui
+
+    def run(self) -> int:
+        self._welcome()
+        while True:
+            try:
+                line = self.ui.ask("improve> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("/") or text.lower() in ("quit", "exit"):
+                if self._command(text):
+                    break
+                continue
+            self._propose(text)
+        return 0
+
+    def _welcome(self) -> None:
+        print()
+        print(
+            "  "
+            + self.ui.paint(
+                "OffGrid self-improvement terminal", "\033[1m", "\033[35m"
+            )
+        )
+        self.ui.info("offline-first: the team works in a private copy")
+        self.ui.info("nothing reaches the live tree until you type 'approve'")
+        self.ui.info("/help for commands, /quit to leave")
+        self._show_pending()
+
+    def _show_pending(self) -> None:
+        pending = self.improver.pending()
+        if not pending:
+            self.ui.info("no pending request")
+            return
+        self.ui.warn(f"{len(pending)} pending request(s)")
+        for item in pending[:5]:
+            print(f"  {item.id}  {self._summary(item)}")
+        self.ui.info("review it with /show, then /approve or /reject")
+
+    def _propose(self, hint: str) -> None:
+        pending = self.improver.pending()
+        if pending:
+            self.ui.warn(f"request {pending[0].id} is waiting for approval")
+            self.ui.info("use /show, /approve or /reject before starting another")
+            return
+        self.ui.info("working in a private copy; the live tree is unchanged")
+        try:
+            request = self.improver.propose(hint=hint, source="terminal")
+        except ProviderError as exc:
+            self.ui.error(str(exc))
+            return
+        except ImproveError as exc:
+            self.ui.warn(str(exc))
+            return
+        except KeyboardInterrupt:
+            print()
+            self.ui.warn("proposal interrupted; the live tree is unchanged")
+            return
+        self._review(request)
+
+    def _review(self, request: Request) -> None:
+        print()
+        print(SelfImprover.describe(request))
+        self.ui.info("the live tree is unchanged")
+        choice = self.ui.ask(
+            "  type 'approve' to apply, 'reject' to discard, or Enter to keep pending: "
+        ).strip().lower()
+        if choice == "approve":
+            self._apply(request)
+        elif choice == "reject":
+            self._reject(request)
+        else:
+            self.ui.info(f"{request.id} is pending; inspect it later with /show")
+
+    def _command(self, text: str) -> bool:
+        parts = text.split(maxsplit=1)
+        name = parts[0].lower()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        if name in ("/quit", "/exit", "quit", "exit"):
+            return True
+        if name in ("/help", "/h"):
+            print(self.HELP.rstrip())
+            return False
+        if name in ("/list", "/pending"):
+            self._list()
+            return False
+        if name == "/show":
+            self._show(argument)
+            return False
+        if name == "/approve":
+            self._approve(argument)
+            return False
+        if name == "/reject":
+            request = self._find(argument, pending_only=True)
+            if request is not None:
+                self._reject(request)
+            return False
+        if name in ("/restore", "/undo"):
+            self._restore(argument)
+            return False
+        self.ui.warn(f"unknown command {name}; type /help")
+        return False
+
+    def _list(self) -> None:
+        requests = self.improver.all_requests()
+        pending = [item for item in requests if item.state == "pending"]
+        recent = [item for item in requests if item.state != "pending"][:10]
+        if not pending and not recent:
+            self.ui.info("no self-improvement requests yet")
+            return
+        if pending:
+            print()
+            print(self.ui.paint("  waiting for your approval", "\033[1m"))
+            for item in pending[:10]:
+                print(f"  {item.id}  {self._summary(item)}")
+        if recent:
+            print()
+            print(self.ui.paint("  recent requests", "\033[1m"))
+            for item in recent:
+                print(f"  {item.id}  [{item.state}]  {self._summary(item)}")
+
+    def _show(self, request_id: str) -> None:
+        request = self._find(request_id)
+        if request is not None:
+            print(SelfImprover.describe(request))
+
+    def _find(
+        self,
+        request_id: str,
+        pending_only: bool = False,
+        applied_only: bool = False,
+    ) -> Optional[Request]:
+        try:
+            if request_id:
+                return self.improver.get(request_id)
+            if pending_only:
+                pending = self.improver.pending()
+                if not pending:
+                    self.ui.info("no pending self-improvement request")
+                    return None
+                return pending[0]
+            if applied_only:
+                applied = self.improver.latest_applied()
+                if applied is None:
+                    self.ui.info("no applied self-improvement request")
+                    return None
+                return applied
+            requests = self.improver.all_requests()
+            if not requests:
+                self.ui.info("no self-improvement requests yet")
+                return None
+            pending = [item for item in requests if item.state == "pending"]
+            return pending[0] if pending else requests[0]
+        except ImproveError as exc:
+            self.ui.warn(str(exc))
+            return None
+
+    def _approve(self, request_id: str) -> None:
+        request = self._find(request_id, pending_only=True)
+        if request is None:
+            return
+        if request.state != "pending":
+            self.ui.warn(f"request {request.id} is {request.state}, not pending")
+            return
+        print(SelfImprover.describe(request))
+        answer = self.ui.ask("  type 'approve' to apply this request: ").strip().lower()
+        if answer != "approve":
+            self.ui.info("cancelled; the live tree was not changed")
+            return
+        self._apply(request)
+
+    def _apply(self, request: Request) -> None:
+        try:
+            result = self.improver.approve(request.id)
+        except ProviderError as exc:
+            self.ui.error(str(exc))
+            return
+        except ImproveError as exc:
+            self.ui.error(str(exc))
+            return
+        except KeyboardInterrupt:
+            self.ui.warn(
+                "approval interrupted; check the request state before continuing"
+            )
+            return
+        if result.state == "applied":
+            self.ui.ok(f"applied {result.id}; restore with /restore {result.id}")
+            if result.data.get("verify_ok") is True:
+                self.ui.ok("verification passed")
+            else:
+                self.ui.warn("applied but not verified")
+        else:
+            self.ui.error(
+                f"{result.id} was rolled back: "
+                f"{result.data.get('failure') or 'verification failed'}"
+            )
+
+    def _reject(self, request: Request) -> None:
+        try:
+            result = self.improver.reject(request.id)
+        except ImproveError as exc:
+            self.ui.error(str(exc))
+            return
+        self.ui.ok(f"rejected {result.id}; the live tree was not changed")
+
+    def _restore(self, request_id: str) -> None:
+        request = self._find(request_id, applied_only=True)
+        if request is None:
+            return
+        print(SelfImprover.describe(request, include_diff=False))
+        try:
+            result = self.improver.restore(request.id)
+        except ImproveError as exc:
+            self.ui.error(str(exc))
+            return
+        self.ui.ok(f"restored {result.id} to its pre-approval version")
+
+    @staticmethod
+    def _summary(request: Request) -> str:
+        return str(request.data.get("summary") or "(no summary)").strip()[:120]
+
+
 class IdleWatcher:
     """Create pending proposals after a quiet period, never apply them.
 

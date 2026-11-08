@@ -28,6 +28,10 @@ All notable changes to OffGrid are recorded here.
   snapshots every affected file, automatically rolls back failed verification,
   and supports `restore`/`undo`. `chat --improve-when-idle` only creates pending
   requests after a quiet period.
+- `offgrid improve terminal`: an interactive, offline-first terminal for
+  vibe-coding improvements. It proposes in a private copy, prints the diff, and
+  requires explicit approval before applying; `/show`, `/approve`, `/reject`,
+  `/restore`, and `/quit` are built in.
 - Offline `--speak` for `run` and `chat`: final reports are read aloud through
   macOS `say`, Windows SAPI, or Linux `espeak-ng`/`espeak`/`festival`, with
   `--voice`, `OFFGRID_SPEAK`, and `OFFGRID_VOICE` support. No account, network,

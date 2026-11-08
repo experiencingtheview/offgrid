@@ -20,7 +20,7 @@ from .hardware import probe, recommend
 from .scale import adjust as adjust_effort, capacity_for, describe as describe_capacity
 from .orchestrator import RunResult, Team
 from .providers import LocalProvider, ProviderError, discover, open_provider
-from .self_improve import IdleWatcher, ImproveError, SelfImprover
+from .self_improve import IdleWatcher, ImproveError, ImprovementTerminal, SelfImprover
 from .session import SessionLog
 from .ui import UI
 from .workspace import Workspace
@@ -45,7 +45,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid lexicon [--json] [--strict]               the merged meaning vocabulary
   offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
   offgrid desktop [install|remove|path]              put a shortcut on the desktop
-  offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
+  offgrid improve [terminal|list|propose|show|approve|reject|restore|undo]  gated self-improvement
   offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 
 Offline by default. `--council` consults other models when this one is stuck;
@@ -532,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "pending", "propose", "show", "approve", "reject", "restore", "undo", "history"],
+        choices=["terminal", "list", "pending", "propose", "show", "approve", "reject", "restore", "undo", "history"],
     )
     improve.add_argument("request_id", nargs="?", default="", help="request id")
     improve.add_argument(
@@ -827,6 +827,16 @@ def cmd_improve(args: argparse.Namespace) -> int:
     improver = SelfImprover(workspace, config, None, ui)
 
     try:
+        if action == "terminal":
+            if as_json:
+                ui.error("the interactive self-improvement terminal does not support --json")
+                return 2
+            provider = connect(config, ui)
+            if provider is None:
+                return 2
+            improver.provider = provider
+            return ImprovementTerminal(improver, ui).run()
+
         if action == "propose":
             provider = connect(config, ui)
             if provider is None:
