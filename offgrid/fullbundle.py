@@ -481,6 +481,7 @@ sign up for, no internet needed from here on.
 
   One-shot task        ./OffGrid.sh run "add type hints to utils.py"
   Check the setup      ./OffGrid.sh doctor
+  Desktop shortcut     ./OffGrid.sh desktop install
 
 The top-level launchers start chat with no arguments. The same scripts are in
 launch/ for terminal use. They start the bundled model server by itself the

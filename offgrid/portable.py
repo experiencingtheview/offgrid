@@ -51,6 +51,10 @@ same entry points for terminals and scripts. The single-file app is offgrid.pyz;
 the source tree is here if you want to read, test or change it. Both need an
 existing Python 3.9+ and a local model server.
 
+Put a shortcut on the desktop (Windows: OffGrid.bat desktop install):
+
+  ./OffGrid.sh desktop install
+
 A completely offline bundle, including a portable Python, llama.cpp and the
 model file, is a separate and much larger build:
 

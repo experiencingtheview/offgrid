@@ -6,6 +6,10 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- Desktop shortcut installers: `offgrid desktop install` writes a native
+  `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
+  macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
+  `offgrid desktop remove` inspect and clean up the shortcut.
 - Clear top-level launchers (`OffGrid.command`, `OffGrid.bat`, `OffGrid.sh`)
   that start interactive chat when double-clicked and are included in source
   checkouts, installed wheels, portable zips, and full USB bundles.

@@ -89,6 +89,23 @@ bundled model server, it starts that first. The same files are in `launch/` for
 scripts that already use that path. An installed copy can run `offgrid-launch`,
 which is the same as `offgrid chat`.
 
+### Put it on your desktop
+
+Create a native shortcut for the copy you are using:
+
+| Setup | Install the shortcut |
+|---|---|
+| Installed copy | `offgrid desktop install` |
+| Checkout or USB, macOS / Linux | `./OffGrid.sh desktop install` |
+| Checkout or USB, Windows | `OffGrid.bat desktop install` |
+
+Linux gets `OffGrid.desktop`, macOS gets a double-clickable `OffGrid.command`,
+and Windows gets `OffGrid.lnk`. The shortcut points at the existing launcher, so
+a portable or USB copy still starts its bundled model server. Use `--desktop DIR`
+to choose another folder, `offgrid desktop path` to show the current location,
+and `offgrid desktop remove` to delete it. From a checkout without an installed
+command, use `python3 -m offgrid desktop install`.
+
 ### A. You already have Ollama (easiest)
 
 ```console
@@ -237,6 +254,7 @@ offgrid trust                                the promises, and the current postu
 offgrid protect [--kit|--check|--backup PATH] whose side it is on, and a household kit
 offgrid lexicon [--json] [--strict]          the merged meaning vocabulary
 offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
+offgrid desktop [install|remove|path]          put a shortcut on the desktop
 offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
 offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 offgrid config                               the fully resolved configuration

@@ -44,6 +44,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid protect [--kit|--check|--restore PATH]    whose side it is on, and a household kit
   offgrid lexicon [--json] [--strict]               the merged meaning vocabulary
   offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
+  offgrid desktop [install|remove|path]              put a shortcut on the desktop
   offgrid improve [list|propose|show|approve|reject|restore|undo]  gated self-improvement
   offgrid maintain [--once] [--interval SECONDS] [--improve]  self-debug and housekeeping loop
 
@@ -461,6 +462,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     distribute.add_argument("--json", action="store_true", help="machine-readable output")
     add_common(distribute)
+
+    desktop = subparsers.add_parser(
+        "desktop", help="install, inspect or remove a desktop shortcut"
+    )
+    desktop.add_argument(
+        "action",
+        nargs="?",
+        default="install",
+        choices=["install", "remove", "path"],
+    )
+    desktop.add_argument(
+        "--desktop",
+        default="",
+        metavar="DIR",
+        help="desktop directory (default: the current user's desktop)",
+    )
+    desktop.add_argument(
+        "--root",
+        default="",
+        metavar="DIR",
+        help="OffGrid folder to link to (default: this checkout or installed copy)",
+    )
+    desktop.add_argument(
+        "--force", action="store_true", help="replace or remove an existing shortcut"
+    )
+    desktop.add_argument("--json", action="store_true", help="machine-readable output")
 
     maintain = subparsers.add_parser(
         "maintain",
@@ -2887,6 +2914,63 @@ def cmd_distribute(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_desktop(args: argparse.Namespace) -> int:
+    from . import desktop as desktop_module
+
+    action = (getattr(args, "action", "install") or "install").lower()
+    desktop_dir = (
+        Path(args.desktop).expanduser() if getattr(args, "desktop", "") else None
+    )
+    root = Path(args.root).expanduser() if getattr(args, "root", "") else None
+    try:
+        if action == "path":
+            path = desktop_module.shortcut_path(desktop_dir=desktop_dir)
+            payload = {"action": "path", "path": str(path), "exists": path.exists()}
+        elif action == "remove":
+            removed = desktop_module.remove(
+                desktop_dir=desktop_dir, force=bool(getattr(args, "force", False))
+            )
+            payload = {
+                "action": "remove",
+                "path": str(removed) if removed is not None else "",
+                "removed": removed is not None,
+            }
+        else:
+            shortcut = desktop_module.install(
+                desktop_dir=desktop_dir,
+                root=root,
+                force=bool(getattr(args, "force", False)),
+            )
+            payload = {"action": "install", **shortcut.as_dict()}
+    except desktop_module.DesktopError as exc:
+        if bool(getattr(args, "json", False)):
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+        else:
+            print(f"OffGrid: {exc}", file=sys.stderr)
+        return 1
+
+    payload["ok"] = True
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if action == "path":
+        print(payload["path"])
+    elif action == "remove":
+        if payload["removed"]:
+            print(f"removed desktop shortcut: {payload['path']}")
+        else:
+            print("no desktop shortcut found")
+    else:
+        print(f"desktop shortcut: {payload['path']}")
+        target = payload["target"]
+        if payload["arguments"]:
+            target += " " + " ".join(payload["arguments"])
+        print(f"  target: {target}")
+        print("  double-click it to start OffGrid.")
+    return 0
+
+
 def cmd_trust(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
     from .audit import history
@@ -2935,6 +3019,7 @@ COMMANDS = {
     "trust": cmd_trust,
     "protect": cmd_protect,
     "distribute": cmd_distribute,
+    "desktop": cmd_desktop,
 }
 
 
