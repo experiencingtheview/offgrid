@@ -202,7 +202,9 @@ def build_parser() -> argparse.ArgumentParser:
     fleet.add_argument("--token", default="", help="shared token for add/scan/serve (serve defaults to a generated one)")
     fleet.add_argument("--yes", action="store_true", help="scan: register every discovered peer without prompting")
     fleet.add_argument(
-        "--json", action="store_true", help="scan: machine-readable discoveries and registration outcomes"
+        "--json",
+        action="store_true",
+        help="list/ping/scan: machine-readable peers and outcomes",
     )
     add_common(fleet)
 
@@ -1143,6 +1145,28 @@ def cmd_hardware(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fleet_peer_json(
+    peer: Any, outcome: str, reason: str = "", **extra: Any
+) -> Dict[str, Any]:
+    """One peer in the token-free shape shared by scan, list and ping."""
+    data: Dict[str, Any] = {
+        "name": peer.name if peer is not None else str(extra.get("name") or "peer"),
+        "url": peer.url if peer is not None else "",
+        "tier": peer.tier if peer is not None else "",
+        "ram_gb": peer.ram_gb if peer is not None else 0.0,
+        "vram_gb": peer.vram_gb if peer is not None else 0.0,
+        "accelerators": list(peer.accelerators) if peer is not None else [],
+        "models": list(peer.models) if peer is not None else [],
+        "outcome": outcome,
+        "reason": reason,
+        "reachable": bool(peer.healthy) if peer is not None else False,
+        "latency_ms": peer.latency_ms if peer is not None else 0.0,
+        "last_error": peer.last_error if peer is not None else "",
+    }
+    data.update(extra)
+    return data
+
+
 def cmd_fleet(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
     from .fleet import (
@@ -1157,6 +1181,7 @@ def cmd_fleet(args: argparse.Namespace) -> int:
     fleet = Fleet(config).load()
     action = (args.action or "list").lower()
     terms = list(getattr(args, "terms", []) or [])
+    as_json = bool(getattr(args, "json", False))
 
     if action == "add":
         if len(terms) < 2:
@@ -1182,16 +1207,51 @@ def cmd_fleet(args: argparse.Namespace) -> int:
 
     if action == "ping":
         if not fleet.peers:
-            ui.info("no peers configured yet")
+            if as_json:
+                print(
+                    json.dumps(
+                        {
+                            "action": "ping",
+                            "counts": {"peers": 0, "reachable": 0},
+                            "peers": [],
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                ui.info("no peers configured yet")
             return 1
-        for peer in fleet.ping_all():
+        peers = fleet.ping_all()
+        if as_json:
+            results = [
+                _fleet_peer_json(
+                    peer,
+                    "reachable" if peer.healthy else "unreachable",
+                    "" if peer.healthy else (peer.last_error or "health check failed"),
+                )
+                for peer in peers
+            ]
+            print(
+                json.dumps(
+                    {
+                        "action": "ping",
+                        "counts": {
+                            "peers": len(results),
+                            "reachable": sum(1 for item in results if item["reachable"]),
+                        },
+                        "peers": results,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        for peer in peers:
             state = "ok  " if peer.healthy else "FAIL"
             detail = f"{peer.latency_ms:.0f} ms" if peer.healthy else peer.last_error
             print(f"  {state} {peer.name:<12} {peer.url:<28} {detail}")
         return 0
 
     if action == "scan":
-        as_json = bool(getattr(args, "json", False))
         found = fleet.discover()
         if not found:
             if as_json:
@@ -1228,26 +1288,7 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         seen = set()
         results: List[Dict[str, Any]] = []
 
-        def scan_result(
-            peer: Any, outcome: str, reason: str = "", **extra: Any
-        ) -> Dict[str, Any]:
-            """One discovered peer and what happened to it, without its token."""
-            data: Dict[str, Any] = {
-                "name": peer.name if peer is not None else str(extra.get("name") or "peer"),
-                "url": peer.url if peer is not None else "",
-                "tier": peer.tier if peer is not None else "",
-                "ram_gb": peer.ram_gb if peer is not None else 0.0,
-                "vram_gb": peer.vram_gb if peer is not None else 0.0,
-                "accelerators": list(peer.accelerators) if peer is not None else [],
-                "models": list(peer.models) if peer is not None else [],
-                "outcome": outcome,
-                "reason": reason,
-                "reachable": bool(peer.healthy) if peer is not None else False,
-                "latency_ms": peer.latency_ms if peer is not None else 0.0,
-                "last_error": peer.last_error if peer is not None else "",
-            }
-            data.update(extra)
-            return data
+        scan_result = _fleet_peer_json
 
         if not as_json:
             print()
@@ -1420,6 +1461,27 @@ def cmd_fleet(args: argparse.Namespace) -> int:
             ui.info("stopping")
         finally:
             server.stop()
+        return 0
+
+    if as_json:
+        peers = [
+            _fleet_peer_json(
+                peer,
+                "known",
+                "" if peer.healthy else (peer.last_error or "not checked"),
+            )
+            for peer in sorted(fleet.peers, key=lambda item: item.score, reverse=True)
+        ]
+        print(
+            json.dumps(
+                {
+                    "action": "list",
+                    "counts": {"peers": len(peers)},
+                    "peers": peers,
+                },
+                indent=2,
+            )
+        )
         return 0
 
     print()

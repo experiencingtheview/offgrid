@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -11,7 +12,7 @@ from unittest.mock import patch
 
 from offgrid import cli
 from offgrid.config import Config
-from offgrid.fleet import Fleet, FleetError, peer_from_discovery
+from offgrid.fleet import Fleet, FleetError, Peer, peer_from_discovery
 
 
 class FakeTTY:
@@ -41,9 +42,9 @@ class FleetScanTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def args(self, token="shared", yes=False, json_output=False):
+    def args(self, token="shared", yes=False, json_output=False, action="scan"):
         return SimpleNamespace(
-            action="scan",
+            action=action,
             terms=[],
             workspace=str(self.root),
             token=token,
@@ -201,6 +202,106 @@ class FleetScanTests(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual(payload["counts"]["discovered"], 0)
         self.assertEqual(payload["peers"], [])
+
+    def test_json_list_reuses_the_scan_peer_schema(self):
+        config = Config(workspace=str(self.root), color=False, verbose=0)
+        fleet = Fleet(config).load()
+        peer = fleet.add("desk", "http://192.168.1.20:8776", token="shared")
+        peer.tier = "capable"
+        peer.ram_gb = 16.0
+        peer.vram_gb = 8.0
+        peer.accelerators = ("cuda",)
+        peer.models = ("qwen2.5-coder",)
+        peer.last_seen = time.time()
+        peer.latency_ms = 12.5
+        fleet.save()
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = cli.cmd_fleet(self.args(action="list", json_output=True))
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["action"], "list")
+        self.assertEqual(payload["counts"], {"peers": 1})
+        item = payload["peers"][0]
+        self.assertEqual(
+            set(item),
+            {
+                "name",
+                "url",
+                "tier",
+                "ram_gb",
+                "vram_gb",
+                "accelerators",
+                "models",
+                "outcome",
+                "reason",
+                "reachable",
+                "latency_ms",
+                "last_error",
+            },
+        )
+        self.assertEqual(item["outcome"], "known")
+        self.assertTrue(item["reachable"])
+        self.assertEqual(item["latency_ms"], 12.5)
+        self.assertNotIn("token", item)
+        self.assertNotIn("shared", output.getvalue())
+
+    def test_json_ping_reports_reachable_and_unreachable_peers(self):
+        config = Config(workspace=str(self.root), color=False, verbose=0)
+        fleet = Fleet(config).load()
+        fleet.add("desk", "http://192.168.1.20:8776", token="shared")
+        fleet.add("ghost", "http://192.168.1.21:8776", token="shared")
+        alive = Peer(
+            name="desk",
+            url="http://192.168.1.20:8776",
+            token="shared",
+            tier="capable",
+            ram_gb=16.0,
+            last_seen=time.time(),
+            latency_ms=8.5,
+        )
+        dead = Peer(
+            name="ghost",
+            url="http://192.168.1.21:8776",
+            token="shared",
+            last_error="unreachable (timed out)",
+        )
+
+        output = StringIO()
+        with patch.object(Fleet, "ping_all", return_value=[alive, dead]), redirect_stdout(output):
+            code = cli.cmd_fleet(self.args(action="ping", json_output=True))
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["action"], "ping")
+        self.assertEqual(payload["counts"], {"peers": 2, "reachable": 1})
+        self.assertEqual(
+            [item["outcome"] for item in payload["peers"]],
+            ["reachable", "unreachable"],
+        )
+        self.assertTrue(payload["peers"][0]["reachable"])
+        self.assertEqual(payload["peers"][0]["latency_ms"], 8.5)
+        self.assertFalse(payload["peers"][1]["reachable"])
+        self.assertEqual(payload["peers"][1]["reason"], "unreachable (timed out)")
+        self.assertNotIn("token", payload["peers"][0])
+        self.assertNotIn("shared", output.getvalue())
+
+    def test_json_ping_with_no_peers_is_valid_json(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            code = cli.cmd_fleet(self.args(action="ping", json_output=True))
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {
+                "action": "ping",
+                "counts": {"peers": 0, "reachable": 0},
+                "peers": [],
+            },
+        )
 
     def test_discovery_reply_maps_to_a_peer(self):
         peer = peer_from_discovery(self.entry, token="t")

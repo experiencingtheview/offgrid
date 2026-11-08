@@ -322,6 +322,8 @@ offgrid fleet serve
 # on the laptop or phone, same network
 offgrid fleet scan          # shows peers; asks before registering; prompts for the token
 offgrid fleet scan --json --yes   # machine-readable discoveries and outcomes
+offgrid fleet list --json         # same peer objects, last-known state
+offgrid fleet ping --json         # same peer objects, live reachability
 offgrid fleet ping
 offgrid run "port the parser to rust" --fleet
 
@@ -340,7 +342,7 @@ Rules that are enforced, not just promised:
 - peers must be private LAN addresses (RFC1918, loopback, `.local`); a public IP is refused, so "peer" can never quietly mean "cloud";
 - every inference request needs the shared token, generated once per workspace at `.offgrid/fleet-token` with `0600` permissions and shown to you once;
 - `offgrid fleet scan` broadcasts on the LAN to find machines already serving, then offers each one for registration; nothing is saved without a confirmation (use `--yes` for a non-interactive run), and the shared token is prompted for privately if `--token` was not passed;
-- `offgrid fleet scan --json` prints one JSON object instead of the human listing: `counts` for discovered, registered, known and skipped peers, plus a `peers` array with each unique peer's name, URL, measured capabilities, `outcome` (`registered`, `already_registered`, `skipped`, or `error`), `reason`, `reachable` and latency. It never prompts: without `--yes` or `--token` the peer is reported as skipped with the reason, so a script can inspect first and register deliberately. Tokens are never included in the output;
+- `offgrid fleet scan --json` prints one JSON object instead of the human listing: `counts` for discovered, registered, known and skipped peers, plus a `peers` array with each unique peer's name, URL, measured capabilities, `outcome` (`registered`, `already_registered`, `skipped`, or `error`), `reason`, `reachable` and latency. It never prompts: without `--yes` or `--token` the peer is reported as skipped with the reason, so a script can inspect first and register deliberately. Tokens are never included in the output. `offgrid fleet list --json` and `offgrid fleet ping --json` reuse the same peer object: list reports the last-known state without pinging, while ping checks live reachability and labels each peer `reachable` or `unreachable` with latency and any error;
 - a phone can donate too (Termux + llama.cpp), it just won't be fast;
 - the donating side serves HTTP on `8776` and answers LAN discovery on `8777`; on Windows allow both through the firewall once, and on Termux keep the screen awake;
 - no internet is involved, and the whole feature is off unless you pass `--fleet` or run `fleet serve`.
