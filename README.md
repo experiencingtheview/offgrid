@@ -70,6 +70,23 @@ The interesting part is not the model — it is the **orchestration**. A 7B mode
 
 Pick whichever way you want to get a model on your machine. All three are free.
 
+### Start from a folder you already have
+
+If the OffGrid folder is already in front of you — a GitHub checkout or a copy
+on a USB stick — use its top-level launcher:
+
+| Computer | Start |
+|---|---|
+| macOS | double-click `OffGrid.command` |
+| Windows | double-click `OffGrid.bat` |
+| Linux | run `./OffGrid.sh` |
+| Any terminal | `./OffGrid.sh chat` |
+
+With no arguments the launcher opens the interactive chat; if the folder has a
+bundled model server, it starts that first. The same files are in `launch/` for
+scripts that already use that path. An installed copy can run `offgrid-launch`,
+which is the same as `offgrid chat`.
+
 ### A. You already have Ollama (easiest)
 
 ```console
@@ -107,9 +124,10 @@ python3 scripts/setup_usb.py --target /media/USB/offgrid --model 7b
 It downloads a portable CPython, a llama.cpp build for the current platform and a quantised Qwen2.5-Coder GGUF (about 5.3 GB total for 7B; the 35B option is about 23 GB), then writes launchers. Unplug, carry it, and on the target machine:
 
 ```console
-./launch/offgrid.sh chat          # Linux
-launch\offgrid.bat chat           # Windows
-launch/offgrid.command            # macOS, double-click
+./OffGrid.sh                      # Linux
+OffGrid.bat                       # Windows, double-click
+OffGrid.command                   # macOS, double-click
+./launch/offgrid.sh chat          # explicit terminal form
 ```
 
 No installs, no internet, no admin rights. The launcher starts the bundled model server, waits for it to load, then drops you into the agent. See `README-FIRST.txt` in the bundle.
@@ -139,7 +157,7 @@ For a small app you can copy to several machines or USB sticks, build a portable
 python3 -m offgrid.cli distribute --build dist/offgrid-portable.zip
 ```
 
-That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, launch scripts, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime. The target needs Python 3.9+ and a local model server such as Ollama, llama.cpp, LM Studio or vLLM.
+That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, top-level launchers, launch scripts, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime. The target needs Python 3.9+ and a local model server such as Ollama, llama.cpp, LM Studio or vLLM. Unzip it and double-click `OffGrid.command` or `OffGrid.bat`, or run `./OffGrid.sh` on Linux.
 
 The same command has a terminal wizard and a mounted-device installer:
 
@@ -163,6 +181,7 @@ python3 offgrid.pyz distribute --to /media/USB --yes
 ```console
 pipx install .        # or: pip install --user .
 offgrid doctor
+offgrid-launch        # start chat (same as: offgrid chat)
 ```
 
 ## A voice, offline

@@ -1,6 +1,9 @@
 include README.md
 include LICENSE
 include pyproject.toml
+include OffGrid.sh
+include OffGrid.command
+include OffGrid.bat
 include CHANGELOG.md
 include CONTRIBUTING.md
 include SECURITY.md

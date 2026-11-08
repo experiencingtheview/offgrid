@@ -90,6 +90,8 @@ class FullBundleBuilderTests(unittest.TestCase):
             self.assertTrue((target / "models" / model_name).is_file())
             self.assertTrue((target / "config.json").is_file())
             self.assertTrue((target / "README-FIRST.txt").is_file())
+            for launcher in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
+                self.assertTrue((target / launcher).is_file(), launcher)
             self.assertEqual(fullbundle.missing_components(target), [])
 
     def test_35b_is_a_real_model_option(self):

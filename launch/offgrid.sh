@@ -73,4 +73,10 @@ if [ -n "$MODEL" ] && [ -x "$SERVER" ] && [ -z "${OFFGRID_NO_SERVER:-}" ]; then
 fi
 
 # ---- the agent ------------------------------------------------------------
+# A double-click has no arguments. Start the interactive session rather than
+# printing the command list.
+if [ "$#" -eq 0 ]; then
+  set -- chat
+fi
+
 exec "$PY" -m offgrid "$@"

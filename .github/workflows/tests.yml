@@ -52,6 +52,7 @@ jobs:
           python -m venv /tmp/offgrid-venv
           /tmp/offgrid-venv/bin/pip install --no-deps /tmp/offgrid-dist/offgrid-*.whl
           /tmp/offgrid-venv/bin/offgrid --version
+          /tmp/offgrid-venv/bin/offgrid-launch --version
           /tmp/offgrid-venv/bin/offgrid demo --no-color
       - name: Build a bundle from the installed wheel
         run: |
@@ -65,7 +66,8 @@ jobs:
           names = zipfile.ZipFile("/tmp/offgrid-portable.zip").namelist()
           required = (
               "README.md", "LICENSE", "pyproject.toml", "offgrid.pyz",
-              "offgrid/cli.py", "launch/offgrid.sh", "launch/offgrid.bat",
+              "offgrid/cli.py", "OffGrid.sh", "OffGrid.bat",
+              "launch/offgrid.sh", "launch/offgrid.bat",
               "scripts/setup_usb.py",
           )
           for item in required:
@@ -98,4 +100,5 @@ jobs:
       - name: Check the console entry point and installed assets
         run: |
           offgrid --version
+          offgrid-launch --version
           python -c "from offgrid._bundle import assets_root; raise SystemExit(0 if assets_root() else 1)"

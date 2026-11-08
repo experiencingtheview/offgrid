@@ -44,7 +44,7 @@ offgrid distribute --build /tmp/offgrid-portable.zip
 python3 - <<'PY'
 import zipfile
 names = set(zipfile.ZipFile("/tmp/offgrid-portable.zip").namelist())
-for required in ("README.md", "LICENSE", "launch/offgrid.sh", "scripts/setup_usb.py"):
+for required in ("README.md", "LICENSE", "OffGrid.sh", "launch/offgrid.sh", "scripts/setup_usb.py"):
     assert any(name.endswith(required) for name in names), required
 print("bundle looks complete")
 PY

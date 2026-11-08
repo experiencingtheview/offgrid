@@ -6,6 +6,10 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- Clear top-level launchers (`OffGrid.command`, `OffGrid.bat`, `OffGrid.sh`)
+  that start interactive chat when double-clicked and are included in source
+  checkouts, installed wheels, portable zips, and full USB bundles.
+  `offgrid-launch` is the installed-command equivalent.
 - `offgrid maintain`: a server-safe self-debug and maintenance loop. It checks
   workspace, private state, request files, model health and free disk; repairs
   state permissions; prunes only old terminal self-improvement requests while

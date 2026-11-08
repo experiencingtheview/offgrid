@@ -15,6 +15,9 @@ from typing import Optional
 
 PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 MIN_ASSETS = (
+    "OffGrid.sh",
+    "OffGrid.command",
+    "OffGrid.bat",
     "launch/offgrid.sh",
     "launch/offgrid.command",
     "launch/offgrid.bat",

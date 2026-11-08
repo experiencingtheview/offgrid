@@ -22,15 +22,18 @@ python3 -m build --outdir /tmp/offgrid-dist
 python3 -m venv /tmp/offgrid-venv
 /tmp/offgrid-venv/bin/pip install /tmp/offgrid-dist/offgrid-*.whl
 /tmp/offgrid-venv/bin/offgrid --version
+/tmp/offgrid-venv/bin/offgrid-launch --version
 mkdir -p /tmp/offgrid-work && cd /tmp/offgrid-work
 /tmp/offgrid-venv/bin/offgrid demo --no-color
 /tmp/offgrid-venv/bin/offgrid distribute --build /tmp/offgrid-portable.zip --with-tests
 ```
 
 - [ ] The wheel installs without network access beyond the package index.
-- [ ] `offgrid --version` and `offgrid demo` work from the wheel.
-- [ ] The portable zip contains `launch/`, `scripts/`, `README.md`, `LICENSE`,
-  `pyproject.toml`, `offgrid/`, `offgrid.pyz`, and `tests/` when requested.
+- [ ] `offgrid --version`, `offgrid-launch --version`, and `offgrid demo` work
+  from the wheel.
+- [ ] The portable zip contains `OffGrid.sh`, `OffGrid.command`, `OffGrid.bat`,
+  `launch/`, `scripts/`, `README.md`, `LICENSE`, `pyproject.toml`, `offgrid/`,
+  `offgrid.pyz`, and `tests/` when requested.
 - [ ] The zip extracts and `offgrid.pyz --version` runs.
 - [ ] A `distribute --to` install to a temporary mounted directory works.
 

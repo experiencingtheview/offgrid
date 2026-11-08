@@ -34,6 +34,7 @@ dev = ["build>=1.2"]
 
 [project.scripts]
 offgrid = "offgrid.cli:main"
+offgrid-launch = "offgrid.launch:main"
 offgrid-setup-usb = "offgrid.fullbundle:main"
 
 [project.urls]
@@ -48,6 +49,6 @@ packages = ["offgrid"]
 version = { attr = "offgrid.__version__" }
 
 [tool.setuptools.data-files]
-"share/offgrid" = ["README.md", "LICENSE", "pyproject.toml"]
+"share/offgrid" = ["README.md", "LICENSE", "pyproject.toml", "OffGrid.sh", "OffGrid.command", "OffGrid.bat"]
 "share/offgrid/launch" = ["launch/offgrid.sh", "launch/offgrid.command", "launch/offgrid.bat"]
 "share/offgrid/scripts" = ["scripts/setup_usb.py", "scripts/fetch_library.py", "scripts/demo.py"]

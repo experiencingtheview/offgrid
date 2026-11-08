@@ -52,5 +52,10 @@ echo OffGrid: the model server did not come up yet. Continuing anyway.
 echo Check "%ROOT%\logs\llama.log" or run: offgrid doctor
 
 :run
-"%PY%" -m offgrid %*
-endlocal
+if "%~1"=="" (
+  "%PY%" -m offgrid chat
+) else (
+  "%PY%" -m offgrid %*
+)
+set "RC=%errorlevel%"
+endlocal & exit /b %RC%

@@ -41,13 +41,15 @@ runtime.
 
 Quick start
 -----------
-  python3 offgrid.pyz doctor
-  python3 offgrid.pyz chat
-  python3 offgrid.pyz run "fix the failing test"
+  macOS (double-click)   OffGrid.command
+  Windows (double-click) OffGrid.bat
+  Linux                  ./OffGrid.sh
+  Any terminal           python3 offgrid.pyz chat
 
-The single-file app is offgrid.pyz. The source tree is also here if you want to
-read, test or change it. The launch/ scripts work with an existing Python and
-the source tree.
+The top-level launchers start interactive chat. The launch/ scripts are the
+same entry points for terminals and scripts. The single-file app is offgrid.pyz;
+the source tree is here if you want to read, test or change it. Both need an
+existing Python 3.9+ and a local model server.
 
 A completely offline bundle, including a portable Python, llama.cpp and the
 model file, is a separate and much larger build:
@@ -248,12 +250,26 @@ def build_bundle(
         staging = Path(tmp) / BUNDLE_PREFIX
         staging.mkdir()
         _copy_required(staging, source, "offgrid")
-        for name in ("launch", "scripts", "pyproject.toml", "README.md", "LICENSE"):
+        for name in (
+            "launch",
+            "scripts",
+            "OffGrid.sh",
+            "OffGrid.command",
+            "OffGrid.bat",
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+        ):
             _copy_required(staging, assets, name)
         if with_tests:
             _copy_required(staging, source, "tests")
-        for launcher in ("offgrid.sh", "offgrid.command"):
-            candidate = staging / "launch" / launcher
+        for launcher in (
+            "launch/offgrid.sh",
+            "launch/offgrid.command",
+            "OffGrid.sh",
+            "OffGrid.command",
+        ):
+            candidate = staging / launcher
             if candidate.is_file():
                 _make_executable(candidate)
         if pyz_path and Path(pyz_path).is_file():
@@ -572,7 +588,7 @@ def _safe_extract(archive: zipfile.ZipFile, target: Path) -> None:
         with archive.open(info) as source, destination.open("wb") as output:
             shutil.copyfileobj(source, output)
         permissions = mode & 0o777
-        if relative.name in ("offgrid.sh", "offgrid.command") or relative.suffix.lower() == ".pyz":
+        if relative.name.lower() in ("offgrid.sh", "offgrid.command") or relative.suffix.lower() == ".pyz":
             permissions |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
         if permissions:
             try:
@@ -663,7 +679,13 @@ def _install_bundle_directory(
             dirs_exist_ok=force,
             copy_function=shutil.copy2,
         )
-        for name in ("launch/offgrid.sh", "launch/offgrid.command", "offgrid.pyz"):
+        for name in (
+            "launch/offgrid.sh",
+            "launch/offgrid.command",
+            "OffGrid.sh",
+            "OffGrid.command",
+            "offgrid.pyz",
+        ):
             candidate = destination / name
             if candidate.is_file():
                 _make_executable(candidate)

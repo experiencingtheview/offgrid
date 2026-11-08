@@ -38,13 +38,15 @@ python3 -m build --outdir /tmp/offgrid-dist
 python3 -m venv /tmp/offgrid-venv
 /tmp/offgrid-venv/bin/pip install /tmp/offgrid-dist/offgrid-*.whl
 /tmp/offgrid-venv/bin/offgrid --version
+/tmp/offgrid-venv/bin/offgrid-launch --version
 mkdir -p /tmp/offgrid-work
 cd /tmp/offgrid-work
 /tmp/offgrid-venv/bin/offgrid distribute --build /tmp/offgrid-portable.zip
 ```
 
-The resulting zip must contain `launch/`, `scripts/`, `README.md`, `LICENSE`,
-`pyproject.toml`, the package, and `offgrid.pyz`. On Windows, use the venv's
+The resulting zip must contain `OffGrid.sh`, `OffGrid.command`, `OffGrid.bat`,
+`launch/`, `scripts/`, `README.md`, `LICENSE`, `pyproject.toml`, the package,
+and `offgrid.pyz`. On Windows, use the venv's
 `Scripts\` paths. Do not commit build output, virtual environments, or model
 weights.
 

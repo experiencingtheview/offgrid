@@ -442,6 +442,12 @@ def write_launchers(target: Path, os_name: str, assets: Optional[Path] = None) -
         candidate = launch_dir / name
         if candidate.is_file():
             make_executable(candidate)
+    for name in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
+        source = assets / name
+        if not source.is_file():
+            raise FullBundleError(f"launcher missing from bundle assets: {source}")
+        shutil.copy2(source, target / name)
+        make_executable(target / name)
 
 
 def write_config(target: Path, model_file: str, standalone: bool = True) -> None:
@@ -469,15 +475,17 @@ OffGrid - first run
 This folder is a complete, offline coding agent. Nothing to install, nothing to
 sign up for, no internet needed from here on.
 
-  Linux / macOS      ./launch/offgrid.sh chat
-  macOS (double-click) launch/offgrid.command
-  Windows            launch\\offgrid.bat chat
+  macOS (double-click) OffGrid.command
+  Windows (double-click) OffGrid.bat
+  Linux / terminal     ./OffGrid.sh chat
 
-  One-shot task      ./launch/offgrid.sh run "add type hints to utils.py"
-  Check the setup    ./launch/offgrid.sh doctor
+  One-shot task        ./OffGrid.sh run "add type hints to utils.py"
+  Check the setup      ./OffGrid.sh doctor
 
-The launcher starts the bundled model server by itself the first time, waits
-for it to load (10-40 seconds on a laptop), then drops you into the agent.
+The top-level launchers start chat with no arguments. The same scripts are in
+launch/ for terminal use. They start the bundled model server by itself the
+first time, wait for it to load (10-40 seconds on a laptop), then drop you into
+the agent.
 
 Run it against a project:
 
@@ -503,7 +511,7 @@ def summarise(target: Path, plan: List[str], model_file: str) -> None:
     print()
     print("Next steps")
     print(f"  cd {target}")
-    print("  ./launch/offgrid.sh run \"add a CLI entry point\"")
+    print("  ./OffGrid.sh run \"add a CLI entry point\"")
     print()
     print("Copy the whole folder to a USB stick and it works on another machine")
     print("with no internet, as long as the CPU architecture matches.")
@@ -638,9 +646,12 @@ def missing_components(
     if require_model and not any((target / "models").glob("*.gguf")):
         missing.append("the GGUF model")
     launch = target / "launch"
-    wanted = "offgrid.bat" if os_name == "windows" else "offgrid.sh"
-    if not (launch / wanted).is_file():
-        missing.append(f"{wanted} launcher")
+    for wanted in ("offgrid.sh", "offgrid.command", "offgrid.bat"):
+        if not (launch / wanted).is_file():
+            missing.append(f"{wanted} launcher")
+    for wanted in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
+        if not (target / wanted).is_file():
+            missing.append(f"{wanted} launcher")
     if not (target / "config.json").is_file():
         missing.append("config.json")
     return missing
@@ -794,6 +805,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     write_launchers(target, os_name, bundle_assets)
     plan.append("offgrid/            the agent package (pure stdlib)")
     plan.append("launch/             start scripts for sh, .bat and .command")
+    plan.append("OffGrid.*          double-click launchers at the top level")
 
     # 2. model server
     if llama:

@@ -38,6 +38,9 @@ class PortableBuildTests(unittest.TestCase):
             prefix = portable.BUNDLE_PREFIX
             for name in (
                 f"{prefix}/README-FIRST.txt",
+                f"{prefix}/OffGrid.sh",
+                f"{prefix}/OffGrid.command",
+                f"{prefix}/OffGrid.bat",
                 f"{prefix}/offgrid.pyz",
                 f"{prefix}/offgrid/cli.py",
                 f"{prefix}/offgrid/fullbundle.py",
@@ -88,7 +91,9 @@ class PortableInstallTests(unittest.TestCase):
             self.assertEqual(destination, device / portable.BUNDLE_PREFIX)
             self.assertTrue((destination / "offgrid.pyz").is_file())
             self.assertTrue((destination / "README-FIRST.txt").is_file())
+            self.assertTrue((destination / "OffGrid.sh").is_file())
             if os.name == "posix":
+                self.assertTrue(os.access(destination / "OffGrid.sh", os.X_OK))
                 self.assertTrue(os.access(destination / "launch" / "offgrid.sh", os.X_OK))
             with self.assertRaises(portable.PortableError):
                 portable.install_bundle(bundle, device)
