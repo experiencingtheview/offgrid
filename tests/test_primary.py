@@ -12,7 +12,14 @@ from pathlib import Path
 from offgrid.agents import get_agent
 from offgrid.cli import main
 from offgrid.config import Config
-from offgrid.primary import BACKUP_MANIFEST, LIMITS, PRIMARY, continuity_kit, protection
+from offgrid.primary import (
+    BACKUP_MANIFEST,
+    BACKUP_SIGNATURE,
+    LIMITS,
+    PRIMARY,
+    continuity_kit,
+    protection,
+)
 from offgrid.prompt import HONESTY
 
 
@@ -377,6 +384,256 @@ class CliTests(unittest.TestCase):
             backups = next(check for check in data["checks"] if check["name"] == "backups")
             self.assertFalse(backups["ok"])
             self.assertIn("unsafe path", backups["detail"])
+
+    def test_protect_backup_can_sign_and_verify_the_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            (root / ".offgrid" / "continuity.md").write_text(
+                continuity_kit(Config(), root), encoding="utf-8"
+            )
+            (root / "models").mkdir()
+            (root / "models" / "model.gguf").write_bytes(b"GGUF")
+            key = root / "backup-signing.key"
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                code = main(
+                    [
+                        "protect",
+                        "--backup",
+                        str(target),
+                        "--sign-key",
+                        str(key),
+                        "--workspace",
+                        tmp,
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            data = json.loads(output.getvalue())
+            self.assertTrue(data["signed"])
+            self.assertEqual(data["signature_algorithm"], "hmac-sha256")
+            self.assertTrue(data["signing_key_created"])
+            signature = target / BACKUP_SIGNATURE
+            self.assertEqual(data["signature"], str(signature.resolve()))
+            self.assertTrue(signature.is_file())
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "protect",
+                        "--check",
+                        "--workspace",
+                        tmp,
+                        "--backup",
+                        backup,
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 1, output.getvalue())
+            backups = next(
+                check
+                for check in json.loads(output.getvalue())["checks"]
+                if check["name"] == "backups"
+            )
+            self.assertIn("signed", backups["detail"])
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "protect",
+                        "--check",
+                        "--workspace",
+                        tmp,
+                        "--backup",
+                        backup,
+                        "--sign-key",
+                        str(key),
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            backups = next(
+                check
+                for check in json.loads(output.getvalue())["checks"]
+                if check["name"] == "backups"
+            )
+            self.assertIn("HMAC-SHA256 manifest signature verified", backups["detail"])
+
+            wrong_key = root / "wrong-signing.key"
+            wrong_key.write_text("00" * 32 + "\n", encoding="utf-8")
+            if os.name == "posix":
+                wrong_key.chmod(0o600)
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "protect",
+                        "--check",
+                        "--workspace",
+                        tmp,
+                        "--backup",
+                        backup,
+                        "--sign-key",
+                        str(wrong_key),
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 1, output.getvalue())
+            backups = next(
+                check
+                for check in json.loads(output.getvalue())["checks"]
+                if check["name"] == "backups"
+            )
+            self.assertIn("signature mismatch", backups["detail"])
+
+    def test_protect_check_rejects_a_rehashed_manifest_without_a_valid_signature(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            (root / ".offgrid" / "continuity.md").write_text(
+                continuity_kit(Config(), root), encoding="utf-8"
+            )
+            (root / "models").mkdir()
+            model = root / "models" / "model.gguf"
+            model.write_bytes(b"GGUF")
+            key = root / "backup-signing.key"
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                signed = main(
+                    [
+                        "protect",
+                        "--backup",
+                        str(target),
+                        "--sign-key",
+                        str(key),
+                        "--workspace",
+                        tmp,
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(signed, 0)
+            tampered = b"tampered model bytes"
+            (target / "model.gguf").write_bytes(tampered)
+            manifest = target / BACKUP_MANIFEST
+            old_hash = hashlib.sha256(b"GGUF").hexdigest()
+            new_hash = hashlib.sha256(tampered).hexdigest()
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8").replace(old_hash, new_hash),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "protect",
+                        "--check",
+                        "--workspace",
+                        tmp,
+                        "--backup",
+                        backup,
+                        "--sign-key",
+                        str(key),
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 1, output.getvalue())
+            backups = next(
+                check
+                for check in json.loads(output.getvalue())["checks"]
+                if check["name"] == "backups"
+            )
+            self.assertIn("signature mismatch", backups["detail"])
+
+    def test_protect_check_refuses_a_signed_backup_without_its_signature(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            (root / ".offgrid" / "continuity.md").write_text(
+                continuity_kit(Config(), root), encoding="utf-8"
+            )
+            (root / "models").mkdir()
+            (root / "models" / "model.gguf").write_bytes(b"GGUF")
+            key = root / "backup-signing.key"
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                signed = main(
+                    [
+                        "protect",
+                        "--backup",
+                        str(target),
+                        "--sign-key",
+                        str(key),
+                        "--workspace",
+                        tmp,
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(signed, 0)
+            (target / BACKUP_SIGNATURE).unlink()
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "protect",
+                        "--check",
+                        "--workspace",
+                        tmp,
+                        "--backup",
+                        backup,
+                        "--sign-key",
+                        str(key),
+                        "--json",
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 1, output.getvalue())
+            backups = next(
+                check
+                for check in json.loads(output.getvalue())["checks"]
+                if check["name"] == "backups"
+            )
+            self.assertIn("no manifest signature", backups["detail"])
+
+    def test_protect_refuses_to_store_the_signing_key_inside_the_backup(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as backup:
+            root = Path(tmp)
+            target = Path(backup)
+            (root / ".offgrid").mkdir()
+            (root / ".offgrid" / "continuity.md").write_text(
+                continuity_kit(Config(), root), encoding="utf-8"
+            )
+            (root / "models").mkdir()
+            (root / "models" / "model.gguf").write_bytes(b"GGUF")
+            key = target / "backup-signing.key"
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                code = main(
+                    [
+                        "protect",
+                        "--backup",
+                        str(target),
+                        "--sign-key",
+                        str(key),
+                        "--workspace",
+                        tmp,
+                        "--no-color",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("outside the backup directory", output.getvalue())
+            self.assertFalse((target / "continuity.md").exists())
+            self.assertFalse(key.exists())
 
     def test_protect_json(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,7 +13,9 @@ this thing without internet, and what to do if the machine dies.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
+import secrets
 import shutil
 import tempfile
 import time
@@ -58,6 +60,10 @@ KIT_MAX_AGE_DAYS = 30.0
 MODEL_SUFFIXES = (".gguf", ".safetensors")
 DEFAULT_BACKUP_DIRS = ("backups", ".offgrid/backups")
 BACKUP_MANIFEST = "SHA256SUMS"
+BACKUP_SIGNATURE = "SHA256SUMS.sig"
+SIGNATURE_MAGIC = "offgrid-signature-v1"
+SIGNATURE_ALGORITHM = "hmac-sha256"
+SIGNATURE_DOMAIN = b"offgrid-backup-manifest-v1\n"
 
 
 class BackupError(Exception):
@@ -72,6 +78,9 @@ class BackupReport:
     kit_copy: Path
     model_copy: Path
     manifest: Path
+    signature: Optional[Path] = None
+    signing_key: Optional[Path] = None
+    signing_key_created: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -79,6 +88,11 @@ class BackupReport:
             "kit": {"source": str(self.kit_source), "copy": str(self.kit_copy)},
             "model": {"source": str(self.model_source), "copy": str(self.model_copy)},
             "manifest": str(self.manifest),
+            "signed": self.signature is not None,
+            "signature": str(self.signature) if self.signature is not None else None,
+            "signature_algorithm": SIGNATURE_ALGORITHM if self.signature is not None else None,
+            "signing_key": str(self.signing_key) if self.signing_key is not None else None,
+            "signing_key_created": self.signing_key_created,
             "warning": (
                 "a path cannot prove it is off this machine; verify the drive is not "
                 "the workspace disk and keep another copy elsewhere"
@@ -129,6 +143,81 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _resolve_signing_key(path: Path) -> Path:
+    """Resolve a key path without silently accepting a symlink."""
+    raw = Path(path).expanduser()
+    if raw.is_symlink():
+        raise BackupError(f"refusing a symlinked signing key at {raw}")
+    try:
+        return raw.resolve()
+    except OSError as exc:
+        raise BackupError(f"could not resolve signing key {raw}: {exc}") from exc
+
+
+def _read_signing_key(path: Path) -> bytes:
+    """Read a 32-byte hex key and refuse a key other users can read."""
+    try:
+        if path.is_symlink():
+            raise BackupError(f"refusing a symlinked signing key at {path}")
+        if not path.is_file():
+            raise BackupError(f"signing key is not a regular file: {path}")
+        if path.stat().st_size > 4096:
+            raise BackupError(f"signing key is too large: {path}")
+        if os.name == "posix" and path.stat().st_mode & 0o077:
+            raise BackupError(
+                f"signing key {path} is readable by other users; run `chmod 600 {path}`"
+            )
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise BackupError(f"could not read signing key {path}: {exc}") from exc
+    except UnicodeError as exc:
+        raise BackupError(f"signing key {path} is not valid UTF-8: {exc}") from exc
+    if len(text) != 64 or any(char not in "0123456789abcdefABCDEF" for char in text):
+        raise BackupError(
+            f"signing key {path} must contain exactly 64 hex characters (32 bytes)"
+        )
+    return bytes.fromhex(text)
+
+
+def _create_signing_key(path: Path) -> bytes:
+    """Create a new 256-bit key with private permissions, never overwriting one."""
+    created = False
+    try:
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(secrets.token_hex(32) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except OSError as exc:
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise BackupError(
+            f"could not create signing key {path}: {exc}. "
+            "Create its parent directory first or choose another path."
+        ) from exc
+    return _read_signing_key(path)
+
+
+def _load_or_create_signing_key(path: Path) -> Tuple[bytes, bool]:
+    if path.is_symlink():
+        raise BackupError(f"refusing a symlinked signing key at {path}")
+    if path.exists():
+        return _read_signing_key(path), False
+    return _create_signing_key(path), True
+
+
+def _signature_digest(manifest_bytes: bytes, key: bytes) -> str:
+    return hmac.new(key, SIGNATURE_DOMAIN + manifest_bytes, hashlib.sha256).hexdigest()
+
+
 def _write_sha256_manifest(directory: Path, files: Sequence[Path]) -> Path:
     manifest = directory / BACKUP_MANIFEST
     temporary: Optional[Path] = None
@@ -158,8 +247,75 @@ def _write_sha256_manifest(directory: Path, files: Sequence[Path]) -> Path:
     return manifest
 
 
-def _verify_backup(location: Path) -> Tuple[bool, str]:
-    """Verify a backup directory, or one file in it, against SHA256SUMS."""
+def _write_manifest_signature(manifest: Path, key: bytes) -> Path:
+    """Write an HMAC-SHA256 signature over the exact manifest bytes."""
+    signature = manifest.with_name(BACKUP_SIGNATURE)
+    temporary: Optional[Path] = None
+    try:
+        manifest_bytes = manifest.read_bytes()
+        digest = _signature_digest(manifest_bytes, key)
+        payload = f"{SIGNATURE_MAGIC}\n{SIGNATURE_ALGORITHM} {digest}\n".encode("ascii")
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(manifest.parent),
+            prefix=f".{BACKUP_SIGNATURE}.",
+            suffix=".part",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, signature)
+    except OSError as exc:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        raise BackupError(f"could not write manifest signature {signature}: {exc}") from exc
+    return signature
+
+
+def _verify_manifest_signature(
+    manifest_bytes: bytes, signature: Path, key: bytes
+) -> Tuple[bool, str]:
+    """Check a signature before trusting any path or digest in the manifest."""
+    try:
+        if signature.is_symlink():
+            return False, f"refusing a symlinked manifest signature at {signature}"
+        if not signature.is_file():
+            return False, f"manifest signature is not a regular file: {signature}"
+        if signature.stat().st_size <= 0 or signature.stat().st_size > 4096:
+            return False, f"manifest signature has an invalid size: {signature}"
+        lines = signature.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return False, f"could not read manifest signature {signature}: {exc}"
+    if len(lines) != 2 or lines[0] != SIGNATURE_MAGIC:
+        return False, f"bad manifest signature header in {signature}"
+    parts = lines[1].split(" ")
+    if len(parts) != 2 or parts[0] != SIGNATURE_ALGORITHM:
+        return False, f"unsupported manifest signature algorithm in {signature}"
+    claimed = parts[1]
+    if len(claimed) != 64 or any(char not in "0123456789abcdefABCDEF" for char in claimed):
+        return False, f"bad manifest signature value in {signature}"
+    expected = _signature_digest(manifest_bytes, key)
+    if not hmac.compare_digest(expected, claimed.lower()):
+        return (
+            False,
+            f"manifest signature mismatch for {signature}; "
+            "the manifest or signature was modified, or the key is wrong",
+        )
+    return True, "manifest signature verified"
+
+
+def _verify_backup(
+    location: Path, signing_key: Optional[bytes] = None
+) -> Tuple[bool, str]:
+    """Verify a backup directory, or one file in it, against SHA256SUMS.
+
+    A manifest with a signature is never accepted without the matching key.
+    """
     requested: Optional[str] = None
     try:
         if location.is_dir():
@@ -173,6 +329,7 @@ def _verify_backup(location: Path) -> Tuple[bool, str]:
         return False, f"could not inspect backup location {location}: {exc}"
 
     manifest = directory / BACKUP_MANIFEST
+    signature = directory / BACKUP_SIGNATURE
     if manifest.is_symlink():
         return False, f"refusing a symlinked SHA-256 manifest at {manifest}"
     try:
@@ -183,9 +340,36 @@ def _verify_backup(location: Path) -> Tuple[bool, str]:
             return False, f"the SHA-256 manifest is empty: {manifest}"
         if size > 1024 * 1024:
             return False, f"the SHA-256 manifest is too large: {manifest}"
-        text = manifest.read_text(encoding="utf-8")
+        manifest_bytes = manifest.read_bytes()
+        text = manifest_bytes.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         return False, f"could not read SHA-256 manifest {manifest}: {exc}"
+
+    try:
+        if signature.is_symlink():
+            return False, f"refusing a symlinked manifest signature at {signature}"
+        signature_present = signature.is_file()
+        if signature.exists() and not signature_present:
+            return False, f"manifest signature is not a regular file: {signature}"
+    except OSError as exc:
+        return False, f"could not inspect manifest signature {signature}: {exc}"
+    if signature_present and signing_key is None:
+        return (
+            False,
+            f"the manifest at {manifest} is signed; pass --sign-key PATH to verify it",
+        )
+    if signing_key is not None and not signature_present:
+        return (
+            False,
+            f"no manifest signature at {signature}; a signing key was supplied, "
+            "so refusing an unsigned backup",
+        )
+    if signing_key is not None:
+        signature_ok, signature_detail = _verify_manifest_signature(
+            manifest_bytes, signature, signing_key
+        )
+        if not signature_ok:
+            return False, signature_detail
 
     entries = {}
     for number, line in enumerate(text.splitlines(), 1):
@@ -233,7 +417,10 @@ def _verify_backup(location: Path) -> Tuple[bool, str]:
                 f"SHA-256 mismatch for {name} in {manifest} "
                 f"(expected {expected[:12]}..., got {actual[:12]}...)",
             )
-    return True, f"{len(entries)} file(s) match {manifest}"
+    detail = f"{len(entries)} file(s) match {manifest}"
+    if signing_key is not None:
+        detail += "; HMAC-SHA256 manifest signature verified"
+    return True, detail
 
 
 def _model_files(config: Any, workspace: Path) -> List[Path]:
@@ -318,13 +505,17 @@ def backup_files(
     target: Path,
     kit_path: Optional[Path] = None,
     force: bool = False,
+    sign_key: Optional[Path] = None,
 ) -> BackupReport:
     """Copy the continuity kit and one local model to an existing directory.
 
     The destination must be outside the workspace. This can prevent a backup
     from being mistaken for an off-machine copy merely because it is in another
     folder on the same disk. A SHA256SUMS manifest records both copies so
-    `protect --check` can detect a missing or changed file later.
+    `protect --check` can detect a missing or changed file later. Pass
+    `sign_key` to add an HMAC-SHA256 signature over the manifest; the key is
+    created with private permissions if it does not exist, and must live
+    outside the backup directory.
     """
     root = Path(workspace).expanduser().resolve()
     destination = Path(target).expanduser()
@@ -366,9 +557,13 @@ def backup_files(
     except OSError as exc:
         raise BackupError(f"could not resolve the local model: {exc}") from exc
 
-    if kit.name == BACKUP_MANIFEST or model.name == BACKUP_MANIFEST:
+    if kit.name in (BACKUP_MANIFEST, BACKUP_SIGNATURE) or model.name in (
+        BACKUP_MANIFEST,
+        BACKUP_SIGNATURE,
+    ):
         raise BackupError(
-            f"{BACKUP_MANIFEST} is reserved for the backup manifest; rename the source file"
+            f"{BACKUP_MANIFEST} and {BACKUP_SIGNATURE} are reserved for the backup "
+            "manifest and signature; rename the source file"
         )
     for source in (kit, model):
         if "\n" in source.name or "\r" in source.name:
@@ -380,19 +575,42 @@ def backup_files(
     kit_copy = destination / kit.name
     model_copy = destination / model.name
     manifest = destination / BACKUP_MANIFEST
+    signature = destination / BACKUP_SIGNATURE
     if kit_copy == model_copy:
         raise BackupError("the continuity kit and model have the same file name; rename one first")
     if kit_copy == kit or model_copy == model:
         raise BackupError("the backup destination is the source file; choose another directory")
-    for destination_file in (kit_copy, model_copy, manifest):
+    if signature.exists() and sign_key is None:
+        raise BackupError(
+            f"{signature} exists, so this backup is signed; pass --sign-key KEY to re-sign it"
+        )
+
+    signing_key: Optional[bytes] = None
+    key_path: Optional[Path] = None
+    key_created = False
+    if sign_key is not None:
+        key_path = _resolve_signing_key(sign_key)
+        if key_path == destination or destination in key_path.parents:
+            raise BackupError(
+                "keep the signing key outside the backup directory; a key stored with "
+                "the backup cannot detect tampering that reaches both"
+            )
+
+    for destination_file in (kit_copy, model_copy, manifest, signature):
         if destination_file.exists() and not force:
             raise BackupError(
                 f"{destination_file} already exists; pass --force to replace the backup copy"
             )
 
+    if key_path is not None:
+        signing_key, key_created = _load_or_create_signing_key(key_path)
+
     _copy_file(kit, kit_copy, force)
     _copy_file(model, model_copy, force)
     manifest = _write_sha256_manifest(destination, (kit_copy, model_copy))
+    signature_path: Optional[Path] = None
+    if signing_key is not None:
+        signature_path = _write_manifest_signature(manifest, signing_key)
     return BackupReport(
         target=destination,
         kit_source=kit,
@@ -400,6 +618,9 @@ def backup_files(
         kit_copy=kit_copy,
         model_copy=model_copy,
         manifest=manifest,
+        signature=signature_path,
+        signing_key=key_path,
+        signing_key_created=key_created,
     )
 
 
@@ -409,12 +630,15 @@ def readiness(
     kit_path: Optional[Path] = None,
     backup_paths: Sequence[str] = (),
     max_age_days: float = KIT_MAX_AGE_DAYS,
+    signing_key_path: Optional[Path] = None,
 ) -> ReadinessReport:
     """Check the practical pieces of a continuity handoff, without pretending.
 
     A backup is accepted only when its SHA256SUMS manifest verifies every file
-    it lists. The default locations are convenient but cannot prove an
-    off-machine copy; pass `--backup` for the location you keep elsewhere.
+    it lists. A signed manifest also needs the matching key: without it the
+    backup is unverified, not quietly downgraded to hashes. The default
+    locations are convenient but cannot prove an off-machine copy; pass
+    `--backup` for the location you keep elsewhere.
     """
     workspace = Path(workspace)
     kit = Path(kit_path) if kit_path is not None else workspace / config.session_dir / "continuity.md"
@@ -451,7 +675,17 @@ def readiness(
     else:
         candidates = [workspace / name for name in DEFAULT_BACKUP_DIRS]
         required = False
-    results = [(path, *_verify_backup(path)) for path in candidates]
+    signing_key: Optional[bytes] = None
+    key_error = ""
+    if signing_key_path is not None:
+        try:
+            signing_key = _read_signing_key(_resolve_signing_key(signing_key_path))
+        except BackupError as exc:
+            key_error = str(exc)
+    if key_error:
+        results = [(path, False, key_error) for path in candidates]
+    else:
+        results = [(path, *_verify_backup(path, signing_key)) for path in candidates]
     verified = [(path, detail) for path, ok, detail in results if ok]
     backups_ok = bool(verified) and (not required or len(verified) == len(candidates))
     if backups_ok:
@@ -473,7 +707,7 @@ def readiness(
             backups_ok,
             detail,
             "run `offgrid protect --backup PATH` to write a copy with a SHA256SUMS "
-            "manifest, or point `--backup` at an existing verified copy",
+            "manifest; pass `--sign-key KEY` when creating or checking a signed copy",
         )
     )
 

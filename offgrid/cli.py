@@ -132,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(chat)
 
     doctor = subparsers.add_parser("doctor", help="check the local environment and model server")
+    doctor.add_argument(
+        "--sign-key",
+        default="",
+        metavar="PATH",
+        help="key file for verifying a signed backup manifest",
+    )
     add_common(doctor)
 
     models = subparsers.add_parser("models", help="list models on the local server")
@@ -283,7 +289,10 @@ def build_parser() -> argparse.ArgumentParser:
     protect_mode.add_argument(
         "--check",
         action="store_true",
-        help="check continuity readiness: kit, freshness, SHA-256 verified backups and local model",
+        help=(
+            "check continuity readiness: kit, freshness, SHA-256 verified "
+            "(and optionally signed) backups, and local model"
+        ),
     )
     protect.add_argument(
         "--out",
@@ -301,6 +310,15 @@ def build_parser() -> argparse.ArgumentParser:
             "copy the kit and local model with a SHA256SUMS manifest to this existing "
             "off-workspace directory; with --check: verify this backup location instead "
             "(repeatable)"
+        ),
+    )
+    protect.add_argument(
+        "--sign-key",
+        default="",
+        metavar="PATH",
+        help=(
+            "HMAC-SHA256 key file for signing or verifying a backup manifest; "
+            "created with mode 0600 if missing during backup, never during check"
         ),
     )
     protect.add_argument(
@@ -790,7 +808,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ui.info("shell access disabled by configuration")
     from . import primary as primary_module
 
-    readiness = primary_module.readiness(config, workspace.root)
+    signing_key_path = (
+        Path(args.sign_key).expanduser() if getattr(args, "sign_key", "") else None
+    )
+    readiness = primary_module.readiness(
+        config, workspace.root, signing_key_path=signing_key_path
+    )
     _print_readiness(readiness, ui, heading="continuity")
     print()
     return 0 if found or config.endpoint else 1
@@ -1773,6 +1796,9 @@ def cmd_protect(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
     from . import primary as primary_module
 
+    sign_key_arg = getattr(args, "sign_key", "") or ""
+    signing_key_path = Path(sign_key_arg).expanduser() if sign_key_arg else None
+
     if getattr(args, "check", False):
         max_age_days = getattr(args, "max_age_days", 30.0)
         if max_age_days <= 0:
@@ -1789,6 +1815,7 @@ def cmd_protect(args: argparse.Namespace) -> int:
             kit_path=kit_path,
             backup_paths=getattr(args, "backup", []) or [],
             max_age_days=max_age_days,
+            signing_key_path=signing_key_path,
         )
         if args.json:
             print(json.dumps(report.as_dict(), indent=2))
@@ -1797,6 +1824,12 @@ def cmd_protect(args: argparse.Namespace) -> int:
         return 0 if report.ready else 1
 
     backup_paths = getattr(args, "backup", []) or []
+    if sign_key_arg and getattr(args, "kit", False):
+        ui.error("--sign-key cannot be combined with --kit; use it with --backup or --check")
+        return 2
+    if sign_key_arg and not backup_paths and not getattr(args, "check", False):
+        ui.error("--sign-key requires --backup or --check")
+        return 2
     if backup_paths and getattr(args, "kit", False):
         ui.error("--backup cannot be combined with --kit; use it on its own or with --check")
         return 2
@@ -1816,6 +1849,7 @@ def cmd_protect(args: argparse.Namespace) -> int:
                 Path(backup_paths[0]),
                 kit_path=kit_path,
                 force=bool(args.force),
+                sign_key=signing_key_path,
             )
         except primary_module.BackupError as exc:
             ui.error(str(exc))
@@ -1827,7 +1861,24 @@ def cmd_protect(args: argparse.Namespace) -> int:
             ui.info(f"  kit: {report.kit_copy}")
             ui.info(f"  model: {report.model_copy}")
             ui.info(f"  manifest: {report.manifest} (SHA-256)")
-            ui.info("  verify this copy with `offgrid protect --check --backup <same path>`.")
+            if report.signature:
+                ui.info(f"  signature: {report.signature} (HMAC-SHA256)")
+                if report.signing_key_created:
+                    ui.warn(f"  signing key created: {report.signing_key}")
+                    ui.info(
+                        "  keep the signing key off the backup drive; without it the "
+                        "signature cannot be verified."
+                    )
+                else:
+                    ui.info(f"  signing key: {report.signing_key}")
+                ui.info(
+                    "  verify this copy with `offgrid protect --check --backup <same path> "
+                    "--sign-key <key>`."
+                )
+            else:
+                ui.info(
+                    "  verify this copy with `offgrid protect --check --backup <same path>`."
+                )
             ui.info(
                 "  this path cannot prove it is off this machine; verify the drive "
                 "is not the workspace disk and keep another copy elsewhere."
