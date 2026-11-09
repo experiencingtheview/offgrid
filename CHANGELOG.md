@@ -50,6 +50,11 @@ All notable changes to OffGrid are recorded here.
   against real in-memory SQLite through Node's built-in driver, so the upsert
   and its ordering guard are evaluated by SQL rather than by a JavaScript
   stand-in, and the workflow pins Node 24 for that module.
+- The website's download button now serves `/download/offgrid-setup.zip`, a
+  small setup wizard made of macOS, Linux and Windows launchers. Each one opens a
+  terminal, fetches the source once into `~/OffGrid`, runs `offgrid setup`, and
+  starts the chat when a model server answers; nothing is installed system-wide
+  and an old or missing Python is reported instead of failing later.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is

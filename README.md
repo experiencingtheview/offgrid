@@ -187,6 +187,12 @@ python3 -m offgrid.cli distribute --to /media/USB --bundle /path/to/offgrid-usb 
 
 If upstream has no prebuilt llama.cpp binary for your platform, the standalone builder still finishes, writes the source bundle, and falls back to autodetecting an installed Ollama or LM Studio on the target machine. The wizard is stricter: it reports the missing portable Python, llama.cpp or model as an error instead of calling the result complete. The model weights are always downloaded directly from Hugging Face.
 
+### The download button on the website
+
+The project site serves `/download/offgrid-setup.zip`: three launchers and a short `README-FIRST.txt`, about 8 KB in total. Double-click `OffGrid.command` on macOS, double-click `OffGrid.bat` on Windows, or run `OffGrid.sh` on Linux. The launcher opens a terminal, downloads this repository once into `~/OffGrid` if it is not there yet, runs `offgrid setup`, and starts the chat only when a model server answers. If Python is missing or older than 3.9 it says so and stops. Nothing is installed system-wide, no administrator rights are needed, and the only request made is the source archive each file names.
+
+Those launchers are plain text inside `site-archive.js`, and the zip is built when it is requested so the scripts stay reviewable; `node --test site-worker.test.js` checks the archive and its route.
+
 ### Downloadable portable app and device install
 
 For a small app you can copy to several machines or USB sticks, build a portable zip and a single-file `.pyz`:
