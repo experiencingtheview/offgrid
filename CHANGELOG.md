@@ -6,6 +6,10 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- `scripts/apply_tests_ruleset.py`: idempotently applies (or updates) the `Tests`
+  ruleset that requires every Tests job on the default branch. Run it once the
+  repository's GitHub plan supports rulesets for private repositories; supports
+  `--dry-run` and derives `OWNER/REPO` from the origin remote.
 - `offgrid sync peers list|add|remove`: manage sync peers from the CLI without
   hand-editing JSON. Add and remove accept one or more URLs in one command,
   check every URL before touching the config, and merge or remove the batch in

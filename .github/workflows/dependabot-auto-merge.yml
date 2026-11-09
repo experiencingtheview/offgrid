@@ -1,0 +1,53 @@
+# Dependabot creates one grouped GitHub Actions update PR. Merge it only after
+# the Tests workflow succeeds for that exact PR head. This repository's private
+# Free plan does not offer the GitHub auto-merge setting, so this performs the
+# merge directly. This workflow never checks out the pull request head.
+name: Dependabot auto-merge
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge-after-tests:
+    name: Merge after Tests
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Merge the grouped GitHub Actions PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          pr_url=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open --json url --jq '.[0].url')
+          if [ -z "$pr_url" ] || [ "$pr_url" = "null" ]; then
+            echo "No open pull request for $HEAD_BRANCH"
+            exit 0
+          fi
+
+          pr_author=$(gh pr view "$pr_url" --json author --jq '.author.login')
+          pr_title=$(gh pr view "$pr_url" --json title --jq '.title')
+          if [ "$pr_author" != "dependabot[bot]" ]; then
+            echo "Not a Dependabot pull request; nothing to do"
+            exit 0
+          fi
+
+          case "$pr_title" in
+            "Bump the github-actions group"*) ;;
+            *)
+              echo "Not the grouped GitHub Actions pull request; nothing to do"
+              exit 0
+              ;;
+          esac
+
+          gh pr merge --squash --match-head-commit "$HEAD_SHA" "$pr_url"

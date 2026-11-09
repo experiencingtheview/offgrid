@@ -8,6 +8,8 @@ Those are separate decisions for the maintainer.
 - [ ] Set the version in `offgrid/__init__.py` (the single source of truth).
 - [ ] Update `CHANGELOG.md` and the test count/commands in `README.md`.
 - [ ] `python3 -m unittest discover -s tests -t .` passes on Python 3.9 and 3.12.
+- [ ] The required Tests checks and the `Tests` ruleset are in place (see
+  [Required Tests checks and branch protection](#required-tests-checks-and-branch-protection)).
 - [ ] `python3 -m offgrid demo --no-color` succeeds.
 - [ ] `python3 -m offgrid security review` has no unreviewed critical finding.
 - [ ] `git status` contains only intended files; no models, virtualenvs, build
@@ -69,6 +71,49 @@ and result; do not mark a model tested because its dry-run planned correctly.
 - [ ] Fleet `serve` prints the cleartext-HTTP warning.
 - [ ] A wheel install built bundle is tested; no missing data files.
 - [ ] No secrets in the diff or artifacts. Check `git diff` and the built zip.
+
+## Required Tests checks and branch protection
+
+The default branch must require every Tests job before a release is tagged. The
+repository script creates or updates a ruleset named `Tests` for
+`~DEFAULT_BRANCH`:
+
+```console
+python3 scripts/apply_tests_ruleset.py --dry-run   # show the API body only
+GITHUB_TOKEN=... python3 scripts/apply_tests_ruleset.py
+```
+
+The token needs permission to administer repository rulesets (fine-grained:
+Administration read and write; classic: `repo`). GitHub Free does not offer
+rulesets for a private repository, so this needs GitHub Pro or a public
+repository. The script is idempotent: re-running it after a job name changes
+updates the same ruleset instead of creating a duplicate. It prints the ruleset
+URL and required contexts on success.
+
+The required contexts are:
+
+- `Full test suite (Python 3.9)`
+- `Full test suite (Python 3.12)`
+- `Installed wheel and portable bundle`
+- `Wheel install on windows-latest`
+- `Wheel install on macos-latest`
+- `Desktop shortcut on Windows`
+- `Desktop shortcut on macOS`
+- `Desktop shortcut on Linux`
+
+`Publish public CI status` is deliberately excluded: it is skipped on pull
+requests, so it cannot report a useful pull-request result. The ruleset also
+requires the branch to be up to date (`strict_required_status_checks_policy`).
+
+Verify before tagging:
+
+- [ ] Settings -> Rules -> Rulesets shows an active `Tests` ruleset targeting
+  the default branch.
+- [ ] The ruleset lists the eight contexts above and no badge job.
+- [ ] A pull request shows the Tests checks; a failing or missing check blocks
+  merging, and the merge stays disabled until the branch is up to date.
+- [ ] If the GitHub plan still refuses rulesets, record that branch protection
+  could not be applied instead of treating the release as protected.
 
 ## Tag and publish (maintainer only)
 

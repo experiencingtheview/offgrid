@@ -28,6 +28,23 @@ tests use a scripted OpenAI-compatible server on localhost.
 - Error messages say what failed and what to do next; do not silently skip a
   missing security check.
 
+## Required checks
+
+The default branch requires every job in `.github/workflows/tests.yml` through
+a GitHub ruleset named `Tests`. GitHub Free does not offer rulesets for a
+private repository, so this needs GitHub Pro (or a public repository). After the
+plan supports it, a maintainer can apply the ruleset with:
+
+```console
+GITHUB_TOKEN=... python3 scripts/apply_tests_ruleset.py
+```
+
+The token needs permission to administer repository rulesets (fine-grained:
+Administration read and write; classic: `repo`). The script is idempotent,
+updates the existing `Tests` ruleset, and accepts `--dry-run` to print the API
+body without calling GitHub. The badge job is excluded because it is skipped on
+pull requests.
+
 ## Packaging changes
 
 An installed wheel must still be useful. Check the data files and portable
