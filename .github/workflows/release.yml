@@ -16,9 +16,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Run the full suite
@@ -38,7 +38,7 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: offgrid-release-${{ github.ref_name }}
           path: dist/
