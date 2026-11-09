@@ -57,6 +57,13 @@ jobs:
               print(f"{len(infos)} entries, launchers executable")
           PY
 
+      - name: Write the checksum a download can be verified against
+        run: |
+          cd dist
+          sha256sum offgrid-portable.zip > SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+          cat SHA256SUMS
+
       - name: Write the release notes from CHANGELOG.md
         run: python3 scripts/changelog_notes.py "$TAG" > dist/notes.md
 
@@ -67,21 +74,23 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "updating the existing release $TAG"
-            gh release upload "$TAG" dist/offgrid-portable.zip --clobber
+            gh release upload "$TAG" dist/offgrid-portable.zip dist/SHA256SUMS --clobber
             gh release edit "$TAG" --notes-file dist/notes.md
           else
             target=()
             if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
               target=(--target "$GITHUB_SHA")
             fi
-            gh release create "$TAG" dist/offgrid-portable.zip "${target[@]}" \
+            gh release create "$TAG" dist/offgrid-portable.zip dist/SHA256SUMS "${target[@]}" \
               --title "OffGrid $TAG" \
               --notes-file dist/notes.md
           fi
           gh release view "$TAG" --json tagName,assets,url
-          size=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name == "offgrid-portable.zip") | .size')
-          if [ -z "$size" ] || [ "$size" -le 0 ]; then
-            echo "release $TAG has no offgrid-portable.zip attached" >&2
-            exit 1
-          fi
-          echo "release $TAG serves offgrid-portable.zip ($size bytes)"
+          for asset in offgrid-portable.zip SHA256SUMS; do
+            size=$(gh release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$asset\") | .size")
+            if [ -z "$size" ] || [ "$size" -le 0 ]; then
+              echo "release $TAG has no $asset attached" >&2
+              exit 1
+            fi
+            echo "release $TAG serves $asset ($size bytes)"
+          done

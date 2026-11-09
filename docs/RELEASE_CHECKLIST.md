@@ -133,8 +133,9 @@ git push origin --tags
 - [ ] The pushed tag triggers `.github/workflows/release.yml`. It first checks
   that the tag matches `offgrid/__init__.py` and fails instead of publishing a
   bundle labelled with a different version.
-- [ ] The workflow builds `offgrid-portable.zip`, checks it, and attaches it to
-  the release; it does not publish to PyPI and does not upload a wheel or sdist.
+- [ ] The workflow builds `offgrid-portable.zip`, checks it, writes `SHA256SUMS`,
+  and attaches both to the release; it does not publish to PyPI and does not
+  upload a wheel or sdist.
 - [ ] Re-running the workflow with an existing tag replaces the asset in place
   and refreshes the notes on the release.
 - [ ] `CHANGELOG.md` has a `## [<version>] - <date>` section; the workflow

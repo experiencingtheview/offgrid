@@ -64,7 +64,9 @@ All notable changes to OffGrid are recorded here.
   The release notes are that version's `CHANGELOG.md` section, read by
   `scripts/changelog_notes.py`, so the release page and the changelog say the
   same thing and a version with no section is refused instead of published
-  with empty notes.
+  with empty notes. Each release also attaches `SHA256SUMS`, the `sha256sum`
+  line for that archive, so a download can be checked with
+  `sha256sum -c SHA256SUMS` before it is run.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is
