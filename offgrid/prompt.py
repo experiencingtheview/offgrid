@@ -212,9 +212,11 @@ def environment_brief() -> str:
     return f"{brief}\n{machine}" if machine else brief
 
 
-def system_prompt(name: str, title: str, body: str) -> str:
+def system_prompt(
+    name: str, title: str, body: str, primary: Optional[str] = None
+) -> str:
     return (
-        PRIMARY
+        (PRIMARY if primary is None else primary)
         + "\n"
         + BASE.format(name=name, title=title, environment=environment_brief())
         + "\n"

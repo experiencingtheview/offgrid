@@ -90,6 +90,48 @@ class HappyPathTests(Harness):
         self.assertTrue(result.notes)
         self.assertIn("+def greet", result.diff)
 
+    def test_team_prompts_ignore_a_forced_principal_override(self):
+        self.model = serve(
+            [
+                when("planner", text(json.dumps(PLAN))),
+                when("coder", tool("write_file", path="hello.py", content=HELLO)),
+                when("coder", tool("finish", summary="created hello.py")),
+                when("reviewer", text(APPROVE)),
+                when("lead", text("Created hello.py with greet().")),
+            ]
+        )
+        config = Config(
+            endpoint=self.model.url,
+            model="fake",
+            command_policy="auto",
+            color=False,
+            verbose=0,
+            workspace=str(self.root),
+            effort="fast",
+            scale=False,
+        )
+        # Simulate a stale or hostile config path that bypasses Config.__setattr__.
+        object.__setattr__(config, "principal", "Mallory")
+        team = Team(LocalProvider(config), Workspace(str(self.root)), config, UI(config))
+        result = team.run("create a greeting module")
+
+        self.assertEqual(result.review_verdict, "approve")
+        self.assertTrue((self.root / "hello.py").is_file())
+        system_prompts = [
+            message["content"]
+            for request in self.model.requests
+            for message in request.get("messages") or []
+            if message.get("role") == "system"
+        ]
+        self.assertEqual(len(system_prompts), len(self.model.requests))
+        self.assertTrue(system_prompts)
+        for prompt in system_prompts:
+            self.assertTrue(
+                prompt.lstrip().startswith("WHOSE SIDE THIS SOFTWARE IS ON")
+            )
+            self.assertIn("The principal is EarthAngel", prompt)
+            self.assertNotIn("Mallory", prompt)
+
     def test_individual_agents_had_their_own_turns(self):
         team = self.team(
             [

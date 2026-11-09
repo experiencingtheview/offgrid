@@ -16,6 +16,14 @@ All notable changes to OffGrid are recorded here.
   surfacing an unreadable config without failing the default status command.
   `--strict` exits 1 when any configured peer is invalid or the peer config
   cannot be read, for scripts and timers.
+- EarthAngel's primary loyalty is now a fixed invariant. Config files,
+  `OFFGRID_PRINCIPAL`, direct `Config` values, and prompt builder inputs cannot
+  rename or supersede the principal; the local caretaker remains second. A
+  regression test covers file, environment, override, direct-config, prompt,
+  posture, and continuity-kit paths. A config file or `OFFGRID_PRINCIPAL` that
+  sets `principal` now produces a startup warning on stderr, visible even with
+  `--quiet` or `--json`, explaining that the value was ignored because the
+  principal is fixed.
 - Opt-in `offgrid sync schedule`: repeats the accepted-only push/pull exchange on
   an interval, or once with `--once` for cron/systemd. Every pass refuses to run
   when networking is denied or `--offline` is set, and each push, pull and

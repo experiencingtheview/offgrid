@@ -8,6 +8,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .primary import PRINCIPAL
+
 # Popular local OpenAI-compatible servers, in the order we probe them.
 CANDIDATE_ENDPOINTS: Tuple[str, ...] = (
     "http://127.0.0.1:8080/v1",   # llama.cpp llama-server
@@ -95,8 +97,10 @@ class Config:
     council_auto_limit: int = 2  # per agent run, so a stuck agent cannot loop
 
     # -- whose side this software is on -----------------------------------
-    principal: str = "Zach"
-    household: Tuple[str, ...] = ("my dog",)
+    principal: str = PRINCIPAL  # fixed; __setattr__ prevents a config override
+    household: Tuple[str, ...] = ("the dog",)
+    caretaker: str = ""  # local user on this installation; blank means "the local user"
+    caretaker_household: Tuple[str, ...] = ()
 
     # -- security and trust -----------------------------------------------
     security_review: bool = True  # review the changed files at the end of every run
@@ -114,6 +118,17 @@ class Config:
     maintenance_improve: bool = False  # also prepare a pending improvement
 
     # -- loading ---------------------------------------------------------
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Keep the principal identity fixed, whatever the source of config."""
+        if name == "principal":
+            value = PRINCIPAL
+        super().__setattr__(name, value)
+
+    @property
+    def config_warnings(self) -> Tuple[str, ...]:
+        """Load-time notices, such as a file trying to rename the principal."""
+        return getattr(self, "_config_warnings", ())
+
     def merged(self, overrides: Dict[str, Any]) -> "Config":
         known = {f.name for f in fields(self)}
         for key, value in overrides.items():
@@ -160,6 +175,17 @@ def _config_paths(workspace: Path) -> list:
     return paths
 
 
+def _ignored_principal_warning(source: str, value: Any) -> str:
+    """Explain that a supplied principal value never took effect."""
+    shown = " ".join(str(value).split()) or "(empty)"
+    if len(shown) > 60:
+        shown = shown[:57] + "..."
+    return (
+        f"{source} sets principal to {shown!r}; it is ignored because the "
+        f"principal is fixed as {PRINCIPAL}"
+    )
+
+
 def _from_env() -> Dict[str, Any]:
     env = os.environ
     out: Dict[str, Any] = {}
@@ -175,6 +201,7 @@ def _from_env() -> Dict[str, Any]:
         "OFFGRID_VERIFY": ("verify_command", str),
         "OFFGRID_TIMEOUT": ("request_timeout", int),
         "OFFGRID_VOICE": ("voice", str),
+        "OFFGRID_CARETAKER": ("caretaker", str),
         "OFFGRID_SYNC_PORT": ("sync_port", int),
         "OFFGRID_SYNC_INTERVAL": ("sync_interval", int),
         "OFFGRID_IMPROVE_IDLE_MINUTES": ("self_improve_idle_minutes", float),
@@ -221,6 +248,16 @@ def _from_env() -> Dict[str, Any]:
             pass
     if env.get("OFFGRID_FLEET_TOKEN"):
         out["fleet_token"] = env["OFFGRID_FLEET_TOKEN"]
+    if env.get("OFFGRID_HOUSEHOLD"):
+        out["household"] = tuple(
+            part.strip() for part in env["OFFGRID_HOUSEHOLD"].split(",") if part.strip()
+        )
+    if env.get("OFFGRID_CARETAKER_HOUSEHOLD"):
+        out["caretaker_household"] = tuple(
+            part.strip()
+            for part in env["OFFGRID_CARETAKER_HOUSEHOLD"].split(",")
+            if part.strip()
+        )
     if env.get("OFFGRID_SYNC_PEERS"):
         out["sync_peers"] = tuple(
             part.strip() for part in env["OFFGRID_SYNC_PEERS"].split(",") if part.strip()
@@ -248,13 +285,22 @@ def _from_env() -> Dict[str, Any]:
 def load_config(workspace: Path, overrides: Optional[Dict[str, Any]] = None) -> Config:
     """Merge defaults <- config files <- env <- CLI flags, in that order."""
     config = Config()
+    warnings = []
     for path in _config_paths(workspace):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
+            if "principal" in data and data["principal"] != PRINCIPAL:
+                warnings.append(
+                    _ignored_principal_warning(str(path), data["principal"])
+                )
             config.merged(data)
+    env_principal = os.environ.get("OFFGRID_PRINCIPAL")
+    if "OFFGRID_PRINCIPAL" in os.environ and env_principal != PRINCIPAL:
+        warnings.append(_ignored_principal_warning("OFFGRID_PRINCIPAL", env_principal))
+    config._config_warnings = tuple(warnings)
     config.merged(_from_env())
     if overrides:
         config.merged(overrides)

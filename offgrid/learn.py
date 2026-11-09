@@ -23,6 +23,7 @@ from .council import looks_ignorant
 from .memory import MemoryStore, clip_evidence, make_key
 from .models import Message
 from .orchestrator import RunResult
+from .primary import primary_block
 from .providers import LocalProvider, ProviderError
 from .ui import UI
 
@@ -186,6 +187,12 @@ class Retrospective:
         self.memory = memory
         self.config = config
         self.ui = ui
+        self.primary = primary_block(
+            getattr(config, "principal", "EarthAngel"),
+            getattr(config, "household", ("the dog",)),
+            getattr(config, "caretaker", ""),
+            getattr(config, "caretaker_household", ()),
+        )
 
     def record(self, result: RunResult, source: str = "") -> List[Lesson]:
         lessons = deterministic_lessons(result)
@@ -243,7 +250,7 @@ class Retrospective:
         try:
             with self.ui.spinner("archivist reflecting"):
                 completion = self.provider.chat(
-                    [Message("system", spec.system()), Message("user", facts)],
+                    [Message("system", spec.system(self.primary)), Message("user", facts)],
                     temperature=0.1,
                     max_tokens=500,
                 )

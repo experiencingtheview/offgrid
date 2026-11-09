@@ -703,6 +703,8 @@ def prepare(args: argparse.Namespace) -> tuple:
     config = load_config(workspace_path, overrides_from(args))
     config.workspace = str(workspace_path)
     ui = UI(config)
+    for warning in config.config_warnings:
+        ui.startup_warn(warning)
     workspace = Workspace(workspace_path)
     return config, ui, workspace
 
@@ -2696,6 +2698,8 @@ def cmd_protect(args: argparse.Namespace) -> int:
                 {
                     "principal": config.principal,
                     "household": list(config.household),
+                    "caretaker": config.caretaker,
+                    "caretaker_household": list(config.caretaker_household),
                     "posture": posture,
                     "limits": [line for line in primary_module.LIMITS.splitlines() if line.strip()],
                 },
@@ -2706,7 +2710,12 @@ def cmd_protect(args: argparse.Namespace) -> int:
 
     print()
     print(ui.paint("  whose side this software is on", "\033[1m"))
-    for line in primary_module.PRIMARY.splitlines():
+    for line in primary_module.primary_block(
+        config.principal,
+        config.household,
+        config.caretaker,
+        config.caretaker_household,
+    ).splitlines():
         print("  " + line)
     print()
     print(ui.paint("  protections in place", "\033[1m"))

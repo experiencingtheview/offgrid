@@ -25,6 +25,7 @@ from .hardware import probe
 from .models import Message, Stats, ToolCall
 from .scale import adjust as adjust_effort, capacity_for
 from .prompt import SKEPTIC
+from .primary import primary_block
 from .providers import LocalProvider, ProviderError
 from .tools import ToolBox
 from .trust import disclosures as trust_disclosures
@@ -208,6 +209,12 @@ class Team:
         self.notes: List[str] = []
         self.history: List[Tuple[str, str]] = []  # (task, summary) across REPL turns
         self.session_source = "session"
+        self.primary = primary_block(
+            getattr(config, "principal", "EarthAngel"),
+            getattr(config, "household", ("the dog",)),
+            getattr(config, "caretaker", ""),
+            getattr(config, "caretaker_household", ()),
+        )
 
         # What this machine is, and therefore how much work it can afford.
         self.capability = None
@@ -259,6 +266,10 @@ class Team:
         self.stats.add(spec.name, completion)
         return completion
 
+    def _system(self, spec: AgentSpec) -> str:
+        """The shared loyalty block, built from this installation's config."""
+        return spec.system(self.primary)
+
     # -- the agent loop --------------------------------------------------
     def run_agent(
         self,
@@ -279,7 +290,7 @@ class Team:
         budget = max_turns or max(2, int(spec.max_turns * self.effort.turn_multiplier))
 
         user = task if not context else f"{task}\n\nCONTEXT (already established, do not redo)\n{context}"
-        messages: List[Message] = [Message("system", spec.system()), Message("user", user)]
+        messages: List[Message] = [Message("system", self._system(spec)), Message("user", user)]
 
         self.ui.agent(spec.name, f"· {spec.title}")
         calls_made = 0
@@ -618,7 +629,7 @@ class Team:
             try:
                 completion = self._chat(
                     spec,
-                    [Message("system", spec.system()), Message("user", user)],
+                    [Message("system", self._system(spec)), Message("user", user)],
                     temperature=min(0.2 + 0.25 * index, 0.9),
                 )
             except ProviderError:
@@ -651,7 +662,7 @@ class Team:
             "Choose the strongest plan, or merge the best parts. Reply with the final plan JSON only."
         )
         try:
-            completion = self._chat(spec, [Message("system", spec.system()), Message("user", user)])
+            completion = self._chat(spec, [Message("system", self._system(spec)), Message("user", user)])
         except ProviderError:
             return candidates[0]
         data = extract_json(completion.text)
@@ -838,7 +849,7 @@ class Team:
         try:
             completion = self._chat(
                 spec,
-                [Message("system", spec.system()), Message("user", user)],
+                [Message("system", self._system(spec)), Message("user", user)],
                 tools=None,
             )
         except ProviderError as exc:
@@ -976,7 +987,7 @@ class Team:
         self.ui.rule()
         self.ui.agent(spec.name, "· reporting")
         try:
-            completion = self._chat(spec, [Message("system", spec.system()), Message("user", facts)])
+            completion = self._chat(spec, [Message("system", self._system(spec)), Message("user", facts)])
             text = completion.text.strip()
         except ProviderError:
             text = ""

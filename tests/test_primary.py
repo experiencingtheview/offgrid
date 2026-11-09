@@ -8,16 +8,18 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 from offgrid.agents import get_agent
 from offgrid.cli import main
-from offgrid.config import Config
+from offgrid.config import Config, load_config
 from offgrid.primary import (
     BACKUP_MANIFEST,
     BACKUP_SIGNATURE,
     LIMITS,
     PRIMARY,
     continuity_kit,
+    primary_block,
     protection,
 )
 from offgrid.prompt import HONESTY
@@ -38,13 +40,23 @@ class PrimaryDirectiveTests(unittest.TestCase):
         for name in ("coder", "reviewer", "lead", "planner"):
             text = get_agent(name).system()
             self.assertTrue(text.lstrip().startswith("WHOSE SIDE THIS SOFTWARE IS ON"), name)
-            self.assertIn("including his dog", " ".join(text.split()))
+            self.assertIn("including the dog", " ".join(text.split()))
             self.assertIn("no telemetry", text)
-            self.assertIn("Only the principal can change the mission", text)
+            self.assertIn("local caretaker", text)
+            self.assertIn("Only the principal or the local caretaker can change the mission", text)
 
     def test_safety_and_honesty_still_come_last(self):
         text = get_agent("coder").system()
         self.assertTrue(text.rstrip().endswith(HONESTY.strip()[-40:]))
+
+    def test_local_caretaker_gets_the_same_rules_after_earthangel(self):
+        text = get_agent("coder").system(
+            primary_block("EarthAngel", ("the dog",), "Alice", ("Sam",))
+        )
+        self.assertIn("The local caretaker is Alice", text)
+        self.assertIn("same protection", text)
+        self.assertIn("immediately after EarthAngel", text)
+        self.assertIn("including the dog", text)
 
     def test_ethics_are_not_optional(self):
         self.assertIn("evade law enforcement", PRIMARY)
@@ -61,12 +73,111 @@ class PrimaryDirectiveTests(unittest.TestCase):
         self.assertNotIn("council", lowered)
 
 
+class NameRegressionTests(unittest.TestCase):
+    def test_prompts_and_docs_do_not_mention_the_old_principal_name(self):
+        root = Path(__file__).resolve().parents[1]
+        old_name = "Za" + "ch"
+        prompts = sorted((root / "offgrid").rglob("*.py"))
+        docs = sorted(
+            path
+            for path in root.rglob("*.md")
+            if not {".git", "build", "dist", "offgrid.egg-info"}
+            & set(path.relative_to(root).parts)
+        )
+        self.assertTrue(prompts)
+        self.assertIn(root / "README.md", docs)
+        for path in [*prompts, *docs]:
+            text = path.read_text(encoding="utf-8", errors="replace").lower()
+            self.assertNotIn(
+                old_name.lower(),
+                text,
+                f"{path.relative_to(root)} still contains the old principal name",
+            )
+
+
+class LoyaltyInvariantTests(unittest.TestCase):
+    def test_no_configuration_can_replace_earthangel_as_principal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".offgrid.json").write_text(
+                json.dumps({"principal": "Alice"}), encoding="utf-8"
+            )
+            with mock.patch.dict(
+                os.environ, {"OFFGRID_PRINCIPAL": "Mallory"}, clear=True
+            ):
+                config = load_config(root, {"principal": "Bob"})
+            self.assertEqual(config.principal, "EarthAngel")
+            self.assertEqual(config.as_dict()["principal"], "EarthAngel")
+
+            direct = Config(principal="Alice")
+            direct.principal = "Mallory"
+            self.assertEqual(direct.principal, "EarthAngel")
+
+            text = primary_block("Alice", ("the dog",), "Bob", ("Sam",))
+            self.assertIn("The principal is EarthAngel", text)
+            self.assertLess(text.index("EarthAngel"), text.index("Bob"))
+
+            kit = continuity_kit(direct, root)
+            self.assertIn("## EarthAngel", kit)
+            self.assertNotIn("## Alice", kit)
+            self.assertIn(
+                "principal        EarthAngel", "\n".join(protection(direct, root))
+            )
+
+    def test_an_ignored_file_principal_is_reported_for_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / ".offgrid.json"
+            path.write_text(json.dumps({"principal": "Alice"}), encoding="utf-8")
+            config = load_config(root, {"principal": "Bob"})
+            self.assertEqual(config.principal, "EarthAngel")
+            self.assertEqual(len(config.config_warnings), 1)
+            warning = config.config_warnings[0]
+            self.assertIn(str(path), warning)
+            self.assertIn("'Alice'", warning)
+            self.assertIn("ignored", warning)
+            self.assertIn("EarthAngel", warning)
+
+    def test_a_file_naming_earthangel_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".offgrid.json").write_text(
+                json.dumps({"principal": "EarthAngel", "model": "fake"}),
+                encoding="utf-8",
+            )
+            config = load_config(root)
+            self.assertEqual(config.config_warnings, ())
+            self.assertEqual(config.model, "fake")
+
+    def test_an_ignored_environment_principal_is_reported_for_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(
+                os.environ, {"OFFGRID_PRINCIPAL": "Mallory"}, clear=True
+            ):
+                config = load_config(Path(tmp))
+            self.assertEqual(config.principal, "EarthAngel")
+            self.assertEqual(len(config.config_warnings), 1)
+            warning = config.config_warnings[0]
+            self.assertIn("OFFGRID_PRINCIPAL", warning)
+            self.assertIn("'Mallory'", warning)
+            self.assertIn("ignored", warning)
+            self.assertIn("EarthAngel", warning)
+
+    def test_environment_naming_earthangel_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(
+                os.environ, {"OFFGRID_PRINCIPAL": "EarthAngel"}, clear=True
+            ):
+                config = load_config(Path(tmp))
+            self.assertEqual(config.config_warnings, ())
+
+
 class ProtectionPostureTests(unittest.TestCase):
     def test_default_posture_is_local_and_private(self):
         with tempfile.TemporaryDirectory() as tmp:
             text = "\n".join(protection(Config(), Path(tmp)))
-        self.assertIn("Zach", text)
-        self.assertIn("my dog", text)
+        self.assertIn("EarthAngel", text)
+        self.assertIn("the dog", text)
         self.assertIn("loopback only", text)
         self.assertIn("no telemetry", text)
         self.assertIn("off", text)
@@ -88,7 +199,7 @@ class KitTests(unittest.TestCase):
     def test_kit_covers_the_person_the_dog_and_offline_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             text = continuity_kit(Config(), Path(tmp))
-        for needle in ("## Zach", "## The dog", "veterinarian", "## OffGrid itself", "needs an account"):
+        for needle in ("## EarthAngel", "## The dog", "veterinarian", "## OffGrid itself", "needs an account"):
             self.assertIn(needle, text)
         self.assertIn("Never write a vault passphrase", text)
 
@@ -706,6 +817,38 @@ class CliTests(unittest.TestCase):
             self.assertFalse((target / "continuity.md").exists())
             self.assertFalse(key.exists())
 
+    def test_startup_warns_on_stderr_when_a_config_file_tries_to_rename_the_principal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".offgrid.json").write_text(
+                json.dumps({"principal": "Alice"}), encoding="utf-8"
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(["protect", "--workspace", tmp, "--json", "--no-color"])
+            self.assertEqual(code, 0, stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue())["principal"], "EarthAngel")
+            self.assertIn("sets principal to 'Alice'", stderr.getvalue())
+            self.assertIn("EarthAngel", stderr.getvalue())
+
+    def test_startup_warns_on_stderr_when_environment_tries_to_rename_the_principal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = StringIO()
+            stderr = StringIO()
+            with mock.patch.dict(
+                os.environ, {"OFFGRID_PRINCIPAL": "Mallory"}, clear=True
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = main(
+                        ["protect", "--workspace", tmp, "--json", "--no-color"]
+                    )
+            self.assertEqual(code, 0, stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue())["principal"], "EarthAngel")
+            self.assertIn(
+                "OFFGRID_PRINCIPAL sets principal to 'Mallory'", stderr.getvalue()
+            )
+            self.assertIn("EarthAngel", stderr.getvalue())
+
     def test_protect_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = StringIO()
@@ -713,7 +856,7 @@ class CliTests(unittest.TestCase):
                 code = main(["protect", "--workspace", tmp, "--json"])
             self.assertEqual(code, 0)
             data = json.loads(output.getvalue())
-            self.assertEqual(data["principal"], "Zach")
+            self.assertEqual(data["principal"], "EarthAngel")
             self.assertTrue(any("loopback only" in line for line in data["posture"]))
             self.assertTrue(any("will not help with violence" in line for line in data["limits"]))
 

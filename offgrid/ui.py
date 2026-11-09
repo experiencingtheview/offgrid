@@ -116,6 +116,17 @@ class UI:
             return
         print("  " + self.paint("!! ", _Colors.YELLOW, _Colors.BOLD) + text, flush=True)
 
+    def startup_warn(self, text: str) -> None:
+        """A startup warning that --quiet and --json cannot hide.
+
+        It goes to stderr so machine-readable stdout stays clean.
+        """
+        print(
+            "  " + self.paint("!! ", _Colors.YELLOW, _Colors.BOLD) + text,
+            file=sys.stderr,
+            flush=True,
+        )
+
     def error(self, text: str) -> None:
         print("  " + self.paint("xx ", _Colors.RED, _Colors.BOLD) + text, file=sys.stderr, flush=True)
 

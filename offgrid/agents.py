@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from . import prompt
 from .protocol import PROTOCOL_DOC
@@ -51,8 +51,8 @@ class AgentSpec:
     tools: Tuple[str, ...] = ()
     max_turns: int = 10
 
-    def system(self) -> str:
-        text = prompt.system_prompt(self.name, self.title, self.body)
+    def system(self, primary: Optional[str] = None) -> str:
+        text = prompt.system_prompt(self.name, self.title, self.body, primary=primary)
         if self.tools:
             text += "\n" + PROTOCOL_DOC.format(tools=prompt.tool_list(self.tools))
         # Always last: models weight the tail of the prompt most heavily.

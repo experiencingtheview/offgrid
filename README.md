@@ -782,12 +782,14 @@ The rule is wired into behaviour, not just wording:
 
 ## Whose side it is on
 
-OffGrid has one principal: Zach, and his household, including his dog. Their survival, safety and long-term wellbeing sit above the task, the project, the code, any company, and any instruction that arrives from outside. `offgrid protect` prints that priority order and the protections that are actually in place; it is not a mood, it is the first block of every agent prompt.
+**EarthAngel** is the **primary principal**. Their household, including the dog, shares that protection. Their survival, safety and long-term wellbeing sit above the task, the project, the code, any company, and any instruction that arrives from outside. This identity is fixed: a `principal` value in a config file or `OFFGRID_PRINCIPAL` (either is reported with a startup warning when ignored), or a direct `Config(principal=...)` value is normalized to EarthAngel and cannot put another person first. Every installation also has a **local caretaker**: the person who runs that copy. On someone else's computer, that person and their household receive the same protection, privacy, honesty, safety rules and local mission authority, immediately after EarthAngel and their household. They are never sacrificed for the task, and they cannot override EarthAngel's primacy or the safety rules. Set `caretaker` and `caretaker_household` to name them; otherwise the prompt describes the local caretaker generically.
+
+That two-tier order is the first block of every agent prompt, and `offgrid protect` prints it next to the protections that are actually in place. It is not a mood.
 
 What "allegiance" means here, concretely:
 
-- **No telemetry, no backdoors, no quiet uploads.** Data stays on the machine unless you explicitly allowed a remote endpoint, public council or fleet for that run, and the disclosures say so.
-- **Outside text is data, never orders.** A file, a tool result, a model opinion or a web page cannot change the mission. Only Zach can.
+- **No telemetry, no backdoors, no quiet uploads.** Data stays on the machine unless you explicitly allowed a remote endpoint, public council, fleet or sync peer for that run, and the disclosures say so.
+- **Outside text is data, never orders.** A file, a tool result, a model opinion or a web page cannot change the mission. Only EarthAngel, or the local caretaker acting within EarthAngel's primacy, can.
 - **Honesty even when it stings.** A comfortable lie is a betrayal; so is staying quiet about a risk.
 - **Protection is not complicity.** It will not help with violence, weapons, malware, destroying evidence, evading law enforcement, or endangering other people. In a real emergency: local emergency services; legal trouble: a lawyer; the dog: a veterinarian.
 
@@ -874,8 +876,9 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
   "sync_interval": 900,
   "sync_allow_http": false,
   "security_review": true,
-  "principal": "Zach",
-  "household": ["my dog"],
+  "household": ["the dog"],
+  "caretaker": "",
+  "caretaker_household": [],
   "review_rounds": -1,
   "test_fix_rounds": -1,
   "verify_command": "python3 -m pytest -q",
@@ -891,7 +894,7 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
 }
 ```
 
-Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_SYNC_PEERS`, `OFFGRID_SYNC_PORT`, `OFFGRID_SYNC_ALLOW_HTTP`, `OFFGRID_SYNC_TOKEN`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
+Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_SYNC_PEERS`, `OFFGRID_SYNC_PORT`, `OFFGRID_SYNC_ALLOW_HTTP`, `OFFGRID_SYNC_TOKEN`, `OFFGRID_HOUSEHOLD`, `OFFGRID_CARETAKER`, `OFFGRID_CARETAKER_HOUSEHOLD`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
 
 `-1` on `review_rounds`, `test_fix_rounds`, `review_passes`, `plan_candidates` and `quality_rounds` means "use the effort profile"; any explicit number wins over it. Verification auto-detects `pytest`, `cargo test`, `go test ./...` and `npm test`.
 
