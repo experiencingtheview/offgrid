@@ -72,7 +72,9 @@ All notable changes to OffGrid are recorded here.
   The page and the README also give a PowerShell one-liner that reads the
   expected digest out of `SHA256SUMS` and throws on a mismatch, so a Windows
   download fails loudly instead of being compared by eye; Windows has no
-  `sha256sum`.
+  `sha256sum`. A **Copy** button beside the digest puts it on the clipboard from
+  one small same-origin script (the page's CSP allows that one file and no
+  inline code), and selects the digest when the clipboard API is unavailable.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is

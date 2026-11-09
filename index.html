@@ -49,6 +49,8 @@
           <p class="release-check">
             <span class="release-check-label">SHA-256</span>
             <code class="release-digest" data-release-digest>see SHA256SUMS</code>
+            <button class="release-copy" type="button" data-copy-digest hidden>Copy</button>
+            <span class="release-copy-status" role="status" aria-live="polite"></span>
           </p>
           <p class="release-check">
             <span class="release-check-label">Verify</span>
@@ -299,9 +301,10 @@ python3 -m offgrid run "fix the failing test"</code></pre>
       </div>
       <div class="footer-bottom">
         <span>© 2026 OffGrid contributors</span>
-        <span>This page loads no scripts or third-party assets.</span>
+        <span>No third-party scripts or assets; one local file powers the copy button.</span>
       </div>
     </div>
   </footer>
+  <script src="/copy.js" defer></script>
 </body>
 </html>
