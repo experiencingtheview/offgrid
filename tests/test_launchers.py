@@ -28,6 +28,18 @@ class ShellLauncherTests(unittest.TestCase):
         for name in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
             self.assertTrue((REPO_ROOT / name).is_file(), name)
 
+    def test_windows_launcher_explains_itself_and_waits_before_closing(self):
+        launcher = (REPO_ROOT / "launch" / "offgrid.bat").read_text(encoding="utf-8")
+        # A broken or Store-alias python must be diagnosed, not trusted.
+        self.assertIn("py -3", launcher)
+        self.assertIn("older than 3.9", launcher)
+        # A double-click must leave the message on screen.
+        self.assertIn("pause", launcher)
+        self.assertIn("Unblock-File", launcher)
+        top = (REPO_ROOT / "OffGrid.bat").read_text(encoding="utf-8")
+        self.assertIn("launch\\offgrid.bat", top)
+        self.assertIn("Extract the whole zip", top)
+
     @unittest.skipUnless(os.name == "posix", "shell launchers are POSIX-only")
     def test_launcher_defaults_to_chat_and_passes_arguments(self):
         with tempfile.TemporaryDirectory() as tmp:

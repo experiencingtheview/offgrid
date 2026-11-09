@@ -179,7 +179,7 @@ For a small app you can copy to several machines or USB sticks, build a portable
 python3 -m offgrid.cli distribute --build dist/offgrid-portable.zip
 ```
 
-That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, top-level launchers, launch scripts, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime. The target needs Python 3.9+ and a local model server such as Ollama, llama.cpp, LM Studio or vLLM. Unzip it and double-click `OffGrid.command` or `OffGrid.bat`, or run `./OffGrid.sh` on Linux.
+That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, top-level launchers, launch scripts, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime. The target needs Python 3.9+ and a local model server such as Ollama, llama.cpp, LM Studio or vLLM. Unzip it and double-click `OffGrid.command` or `OffGrid.bat`, or run `./OffGrid.sh` on Linux. On Windows, install Python from python.org and tick "Add python.exe to PATH"; the Microsoft Store alias is not a working interpreter. If a console flashes and closes, run `OffGrid.bat` from a Command Prompt to read the message, and if Smart App Control or SmartScreen blocks the download, unblock the zip before extracting (Properties -> Unblock, or `Get-ChildItem -Recurse | Unblock-File`).
 
 The same command has a terminal wizard and a mounted-device installer:
 

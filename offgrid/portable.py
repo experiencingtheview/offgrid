@@ -46,6 +46,24 @@ Quick start
   Linux                  ./OffGrid.sh
   Any terminal           python3 offgrid.pyz chat
 
+Windows notes
+-------------
+Install Python 3.9 or newer from https://www.python.org/downloads/windows/ and
+tick "Add python.exe to PATH" in the installer. The Microsoft Store "python"
+alias is not a working interpreter.
+
+If OffGrid.bat opens nothing, run it from a Command Prompt in this folder so
+the message stays visible. If Windows Smart App Control or SmartScreen blocks
+the download, right-click the .zip, open Properties and tick Unblock before
+extracting. Already extracted? Run this once in this folder:
+
+  powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Recurse | Unblock-File"
+
+The portable zip runs your installed Python, so it needs no unsigned program.
+The larger USB bundle also carries runtime\\python\\python.exe and
+llama-server.exe, which Smart App Control may refuse; use the portable zip on
+those machines.
+
 The top-level launchers start interactive chat. The launch/ scripts are the
 same entry points for terminals and scripts. The single-file app is offgrid.pyz;
 the source tree is here if you want to read, test or change it. Both need an

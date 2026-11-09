@@ -479,6 +479,12 @@ sign up for, no internet needed from here on.
   Windows (double-click) OffGrid.bat
   Linux / terminal     ./OffGrid.sh chat
 
+Windows note: install Python from python.org and tick "Add python.exe to PATH"
+for the portable zip; this full bundle carries its own runtime below. If Smart
+App Control or SmartScreen blocks the download, unblock the zip before
+extracting (Properties -> Unblock). A console that flashes and closes prints
+its reason if you run OffGrid.bat from a Command Prompt in this folder.
+
   One-shot task        ./OffGrid.sh run "add type hints to utils.py"
   Check the setup      ./OffGrid.sh doctor
   Desktop shortcut     ./OffGrid.sh desktop install

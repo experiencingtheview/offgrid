@@ -152,6 +152,40 @@ request is rejected rather than silently running locally. Commands also stay
 inside the peer's workspace, require the shared token, and refuse destructive
 operations such as recursive deletes, privilege escalation and publishing.
 
+## Double-clicking `OffGrid.bat` opens nothing on Windows
+
+The launcher now prints why it stopped and waits for a key press, but a window
+that cannot start at all still closes quickly. Open a Command Prompt in the
+bundle folder and run `OffGrid.bat` to read the message. The usual causes are:
+
+- no Python 3.9+ installed, or only the Microsoft Store alias, which is not a
+  working interpreter; install Python from python.org and tick "Add python.exe
+  to PATH", or run `py -3 offgrid.pyz chat`;
+- the `.bat` was run from inside the zip viewer, so `launch\offgrid.bat` was
+  never extracted; extract the whole zip first;
+- a stale `OFFGRID_PORT` points at a hung model server; unset it or run
+  `offgrid doctor`.
+
+The launcher prefers a bundled `runtime\python\python.exe`, then `py -3`, then
+`python`, and only uses one that actually runs and is 3.9 or newer.
+
+## Windows Smart App Control refuses the bundle
+
+Files downloaded in a zip keep the Mark-of-the-Web, and Smart App Control only
+trusts signed, reputable apps. Right-click the downloaded zip, open Properties
+and tick Unblock before extracting. If it is already extracted, run this once in
+the folder:
+
+```powershell
+powershell -Command "Get-ChildItem -Recurse | Unblock-File"
+```
+
+The portable zip runs your installed Python, so it needs no unsigned program.
+The full USB bundle also ships `runtime/python/python.exe` and
+`llama-server.exe`, which Smart App Control can refuse even after unblocking;
+prefer the portable zip on those machines. Turning Smart App Control off is not
+reversible without resetting Windows, so try unblocking first.
+
 ## `--speak` is silent
 
 OffGrid uses a voice that is already installed; it does not bundle a TTS
