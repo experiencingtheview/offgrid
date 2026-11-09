@@ -459,8 +459,8 @@ jobs:
           set -euo pipefail
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfLo "/tmp/${archive}" "${base}/${archive}"
-          curl -sSfLo /tmp/gitleaks-checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          curl -sSfLo --retry 5 --retry-delay 2 --retry-all-errors "/tmp/${archive}" "${base}/${archive}"
+          curl -sSfLo --retry 5 --retry-delay 2 --retry-all-errors /tmp/gitleaks-checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           (cd /tmp && grep " ${archive}$" gitleaks-checksums.txt | sha256sum -c -)
           tar -xzf "/tmp/${archive}" -C /tmp gitleaks
           sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
