@@ -1,0 +1,14 @@
+# gitleaks configuration for OffGrid.
+#
+# The default rules stay in force: private keys, provider tokens, and generic
+# credentials are all reported. The single exclusion is the fake token that
+# tests/test_security_watch.py writes into a temporary workspace to exercise
+# `offgrid security watch`. It is not a credential and never leaves the test.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake tokens written by SecurityReviewWatchTests"
+regexTarget = "secret"
+regexes = ['''^abcdefghijklmnop$''', '''^qrstuvwxyz123456$''']
