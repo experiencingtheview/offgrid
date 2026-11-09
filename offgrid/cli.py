@@ -727,7 +727,16 @@ def prepare(args: argparse.Namespace) -> tuple:
     return config, ui, workspace
 
 
-def connect(config: Config, ui: UI) -> Optional[LocalProvider]:
+def _no_server_hint(ui: UI) -> None:
+    """The three free local servers, and where to read more."""
+    ui.info("start one of these, then try again:")
+    ui.info("  llama.cpp:  llama-server -m models/model.gguf --port 8080 --jinja")
+    ui.info("  ollama:     ollama serve   (then: ollama pull qwen2.5-coder:7b)")
+    ui.info("  LM Studio:  start the local server on port 1234")
+    ui.info("or run `offgrid doctor` for a full check")
+
+
+def connect(config: Config, ui: UI, hint: bool = True) -> Optional[LocalProvider]:
     try:
         provider = open_provider(config)
     except ProviderError as exc:
@@ -736,11 +745,8 @@ def connect(config: Config, ui: UI) -> Optional[LocalProvider]:
     ok, message = provider.health()
     if not ok:
         ui.error(message)
-        ui.info("start one of these, then try again:")
-        ui.info("  llama.cpp:  llama-server -m models/model.gguf --port 8080 --jinja")
-        ui.info("  ollama:     ollama serve   (then: ollama pull qwen2.5-coder:7b)")
-        ui.info("  LM Studio:  start the local server on port 1234")
-        ui.info("or run `offgrid doctor` for a full check")
+        if hint:
+            _no_server_hint(ui)
         return None
     ui.info(f"connected: {config.resolved_endpoint()} · model {provider.model}")
 
@@ -763,6 +769,28 @@ def connect(config: Config, ui: UI) -> Optional[LocalProvider]:
                 ui.warn("fleet: no peer answered; everything runs on this machine")
         provider = FleetProvider(provider, fleet, config)
     return provider
+
+
+def offer_setup(
+    config: Config, ui: UI, workspace: Workspace
+) -> Optional[LocalProvider]:
+    """A failed start on a terminal offers the setup check instead of just exiting.
+
+    Only the interactive chat does this. ``offgrid run`` keeps its plain exit
+    code, so a script is never asked a question.
+    """
+    from .setup_wizard import run_wizard
+
+    if not sys.stdin.isatty():
+        _no_server_hint(ui)
+        return None
+    answer = ui.ask("  run the setup check first? [Y/n] ").strip().lower()
+    if answer not in ("", "y", "yes"):
+        _no_server_hint(ui)
+        return None
+    run_wizard(config, workspace=Path(workspace.root), interactive=True)
+    # A server might have been started while the report was on screen.
+    return connect(config, ui, hint=False)
 
 
 def build_services(config: Config, workspace: Workspace) -> Dict[str, Any]:
@@ -1127,7 +1155,9 @@ def _request_files(request) -> str:
 
 def cmd_chat(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
-    provider = connect(config, ui)
+    provider = connect(config, ui, hint=False)
+    if provider is None:
+        provider = offer_setup(config, ui, workspace)
     if provider is None:
         return 2
     session = SessionLog(workspace.root, config.session_dir)

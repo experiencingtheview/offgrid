@@ -6,11 +6,15 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from offgrid import cli as cli_module
 from offgrid import desktop, setup_wizard
 from offgrid.cli import main
 from offgrid.config import Config
+from offgrid.providers import ProviderError
+from offgrid.ui import UI
 
 SERVERS = [("http://127.0.0.1:8080/v1", ["qwen2.5-coder-7b"])]
 NOTHING = []
@@ -124,6 +128,90 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(payload["ready"])
         self.assertEqual(payload["workspace"], str(Path.cwd()))
+
+
+class FakeProvider:
+    """A local provider whose health the test decides."""
+
+    model = "qwen2.5-coder-7b"
+    endpoint = "http://127.0.0.1:8080/v1"
+
+    def __init__(self, ok=False):
+        self.ok = ok
+
+    def health(self):
+        return (True, "") if self.ok else (False, "cannot reach " + self.endpoint)
+
+
+class ChatSetupOfferTests(unittest.TestCase):
+    """A failed start offers the wizard; scripts and pipes are never asked."""
+
+    def _offer(self, *, answer="", tty=True, wizard=None, provider=None):
+        provider = provider if provider is not None else FakeProvider()
+        out = StringIO()
+        with patch.object(
+            cli_module, "open_provider", return_value=provider
+        ), patch.object(cli_module.sys.stdin, "isatty", return_value=tty), patch.object(
+            setup_wizard, "run_wizard", wizard or MagicMock(return_value=1)
+        ), patch("builtins.input", return_value=answer), redirect_stdout(out):
+            result = cli_module.offer_setup(
+                Config(), UI(Config()), SimpleNamespace(root="/tmp/project")
+            )
+        return result, out.getvalue(), provider
+
+    def test_accepting_runs_the_wizard_in_place(self):
+        wizard = MagicMock(return_value=1)
+        result, _text, _provider = self._offer(wizard=wizard)
+        self.assertIsNone(result)
+        wizard.assert_called_once()
+        self.assertTrue(wizard.call_args.kwargs["interactive"])
+
+    def test_declining_prints_the_servers_and_gives_up(self):
+        wizard = MagicMock()
+        result, text, _provider = self._offer(answer="n", wizard=wizard)
+        self.assertIsNone(result)
+        wizard.assert_not_called()
+        self.assertIn("ollama serve", text)
+
+    def test_a_pipe_is_never_asked(self):
+        wizard = MagicMock()
+        result, text, _provider = self._offer(tty=False, wizard=wizard)
+        self.assertIsNone(result)
+        wizard.assert_not_called()
+        self.assertIn("llama-server -m", text)
+
+    def test_a_server_started_meanwhile_continues_into_chat(self):
+        provider = FakeProvider()
+
+        def wizard(config, **kwargs):
+            provider.ok = True
+            return 0
+
+        result, _text, _provider = self._offer(wizard=wizard, provider=provider)
+        self.assertIs(result, provider)
+
+    def test_chat_exits_2_without_a_server_when_piped(self):
+        out = StringIO()
+        with patch.object(
+            cli_module, "open_provider", side_effect=ProviderError("no endpoint configured")
+        ), patch.object(cli_module.sys.stdin, "isatty", return_value=False), redirect_stdout(
+            out
+        ):
+            self.assertEqual(main(["chat"]), 2)
+        self.assertIn("ollama serve", out.getvalue())
+
+    def test_a_one_shot_run_never_prompts(self):
+        with patch.object(
+            cli_module, "open_provider", side_effect=ProviderError("no endpoint configured")
+        ), patch.object(cli_module.sys.stdin, "isatty", return_value=True), patch(
+            "builtins.input", side_effect=AssertionError("a run must not ask a question")
+        ), patch.object(
+            setup_wizard, "run_wizard"
+        ) as wizard, redirect_stdout(
+            StringIO()
+        ):
+            self.assertEqual(main(["run", "add a /health endpoint"]), 2)
+        wizard.assert_not_called()
 
 
 if __name__ == "__main__":

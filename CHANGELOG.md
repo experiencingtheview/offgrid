@@ -53,7 +53,8 @@ All notable changes to OffGrid are recorded here.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is
-  machine-readable, and it exits 1 until a model server answers.
+  machine-readable, and it exits 1 until a model server answers. Starting the
+  chat with no server answering offers the same check before giving up.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and

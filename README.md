@@ -104,6 +104,10 @@ a terminal it also offers the desktop shortcut. `--no-input` prints the report
 without asking anything, `--json` is machine-readable, and it exits 1 until a
 server answers, so a script can wait on it.
 
+Starting the chat with nothing answering offers this same check instead of
+leaving you with a paragraph of advice; accept and it runs in place. Declining
+prints the three local servers and exits exactly as before.
+
 ### Put it on your desktop
 
 Create a native shortcut for the copy you are using:
