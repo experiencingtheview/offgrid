@@ -46,7 +46,10 @@ All notable changes to OffGrid are recorded here.
   workflow runs it with Node's built-in runner so a regression that kept a
   week-old result looking green fails CI. The same file covers the publish
   endpoint: a missing or wrong token is refused, a malformed body never reaches
-  D1, and an older run cannot overwrite a newer result.
+  D1, and an older run cannot overwrite a newer result. Those write tests run
+  against real in-memory SQLite through Node's built-in driver, so the upsert
+  and its ordering guard are evaluated by SQL rather than by a JavaScript
+  stand-in, and the workflow pins Node 24 for that module.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
