@@ -359,50 +359,56 @@ class SelfImprover:
             clean.append(rel)
         return sorted(set(clean))
 
+    def stage(
+        self,
+        source: str = "manual",
+        quiet: bool = False,
+    ) -> "ProposalSession":
+        """Start a live staging copy that can accept more than one turn."""
+        if self.provider is None:
+            raise ImproveError("a local model provider is required to propose an improvement")
+        if not self._proposal_lock.acquire(blocking=False):
+            raise ImproveError("another self-improvement proposal is already being generated")
+        temporary = None
+        try:
+            self._check_not_pending()
+            temporary = tempfile.TemporaryDirectory(prefix="offgrid-self-improve-")
+            staging = Path(temporary.name) / "workspace"
+            self._stage(staging)
+            staging_config = self._staging_config(staging, quiet)
+            staging_ui = UI(staging_config)
+            staging_workspace = Workspace(str(staging))
+            team = Team(
+                self.provider,
+                staging_workspace,
+                staging_config,
+                staging_ui,
+            )
+            return ProposalSession(
+                improver=self,
+                temporary=temporary,
+                workspace=staging_workspace,
+                config=staging_config,
+                ui=staging_ui,
+                team=team,
+                source=source,
+            )
+        except BaseException:
+            if temporary is not None:
+                temporary.cleanup()
+            self._proposal_lock.release()
+            raise
+
     def propose(
         self,
         hint: str = "",
         source: str = "manual",
         quiet: bool = False,
     ) -> Request:
-        """Run the team in a staging copy and store a pending request."""
-        if self.provider is None:
-            raise ImproveError("a local model provider is required to propose an improvement")
-        if not self._proposal_lock.acquire(blocking=False):
-            raise ImproveError("another self-improvement proposal is already being generated")
-        try:
-            self._check_not_pending()
-            with tempfile.TemporaryDirectory(prefix="offgrid-self-improve-") as tmp:
-                staging = Path(tmp) / "workspace"
-                self._stage(staging)
-                staging_config = self._staging_config(staging, quiet)
-                staging_ui = UI(staging_config)
-                staging_workspace = Workspace(str(staging))
-                team = Team(
-                    self.provider,
-                    staging_workspace,
-                    staging_config,
-                    staging_ui,
-                )
-                task = self._task(hint)
-                result = team.run(task, verify_override=staging_config.verify_command)
-                changed = self._validate_changed(
-                    staging_workspace.changed_files(), staging_workspace
-                )
-                if not changed:
-                    raise ImproveError(
-                        "the model did not change any files, so no approval request was created"
-                    )
-                return self._persist(
-                    staging_workspace=staging_workspace,
-                    changed=changed,
-                    task=task,
-                    hint=hint,
-                    source=source,
-                    result=result,
-                )
-        finally:
-            self._proposal_lock.release()
+        """Run one turn in a staging copy and store a pending request."""
+        with self.stage(source=source, quiet=quiet) as staged:
+            staged.run_turn(hint)
+            return staged.finish()
 
     def _persist(
         self,
@@ -412,6 +418,7 @@ class SelfImprover:
         hint: str,
         source: str,
         result: Any,
+        conversation: Optional[List[str]] = None,
     ) -> Request:
         request_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
         directory = self._request_dir(request_id)
@@ -452,6 +459,7 @@ class SelfImprover:
                 "source": source,
                 "task_hint": hint[:2000],
                 "task": task,
+                "conversation": [str(item)[:2000] for item in (conversation or ())][:100],
                 "summary": summary[:12000],
                 "diff": diff,
                 "files": files,
@@ -692,16 +700,101 @@ class SelfImprover:
         return request
 
 
+class ProposalSession:
+    """A private staging copy that survives across conversation turns."""
+
+    def __init__(
+        self,
+        improver: SelfImprover,
+        temporary: Any,
+        workspace: Workspace,
+        config: Config,
+        ui: UI,
+        team: Team,
+        source: str,
+    ) -> None:
+        self.improver = improver
+        self.temporary = temporary
+        self.workspace = workspace
+        self.config = config
+        self.ui = ui
+        self.team = team
+        self.source = source
+        self.turns: List[str] = []
+        self.last_result: Any = None
+        self._closed = False
+
+    @property
+    def changed(self) -> List[str]:
+        return self.workspace.changed_files()
+
+    def run_turn(self, hint: str = "") -> Any:
+        """Run one instruction while preserving the staged files and history."""
+        if self._closed:
+            raise ImproveError("the self-improvement staging copy is closed")
+        hint = str(hint or "").strip()
+        task = self.improver._task(hint)
+        result = self.team.run(task, verify_override=self.config.verify_command)
+        if hint:
+            self.turns.append(hint)
+        self.last_result = result
+        return result
+
+    def finish(self) -> Request:
+        """Turn the current staged state into the pending approval request."""
+        if self._closed:
+            raise ImproveError("the self-improvement staging copy is closed")
+        if self.last_result is None:
+            raise ImproveError("there is no staged turn yet; describe a change first")
+        changed = self.improver._validate_changed(
+            self.workspace.changed_files(), self.workspace
+        )
+        if not changed:
+            raise ImproveError(
+                "the model did not change any files, so no approval request was created"
+            )
+        turns = tuple(self.turns)
+        request = self.improver._persist(
+            staging_workspace=self.workspace,
+            changed=changed,
+            task=self.improver._task("\n\n".join(turns)),
+            hint="\n\n".join(turns),
+            source=self.source,
+            result=self.last_result,
+            conversation=list(turns),
+        )
+        self.close()
+        return request
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.temporary.cleanup()
+        finally:
+            self.improver._proposal_lock.release()
+
+    def __enter__(self) -> "ProposalSession":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
 class ImprovementTerminal:
     """Interactive, offline-first front end for the gated workflow.
 
-    A plain-language line asks the team for one proposal. The team works in a
-    private copy, and the live tree is untouched until the user explicitly
-    approves the request. The terminal never applies a proposal automatically.
+    Each plain-language line is another turn in one private staging copy. The
+    live tree is untouched until the user runs ``/done`` and then explicitly
+    approves the resulting request. The terminal never applies a proposal
+    automatically.
     """
 
     HELP = """\
-  describe a change in plain language
+  describe a change; repeat for more turns
+  /done             create the approval request from the staged turns
+  /cancel           discard the staged conversation
   /help             show this help
   /list             list pending and recent requests
   /show [ID]        show a request and its diff
@@ -714,23 +807,31 @@ class ImprovementTerminal:
     def __init__(self, improver: SelfImprover, ui: UI) -> None:
         self.improver = improver
         self.ui = ui
+        self._staged: Optional[ProposalSession] = None
 
     def run(self) -> int:
         self._welcome()
-        while True:
-            try:
-                line = self.ui.ask("improve> ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-            text = line.strip()
-            if not text:
-                continue
-            if text.startswith("/") or text.lower() in ("quit", "exit"):
-                if self._command(text):
+        try:
+            while True:
+                try:
+                    prompt = "staging> " if self._staged is not None else "improve> "
+                    line = self.ui.ask(prompt)
+                except (EOFError, KeyboardInterrupt):
+                    print()
                     break
-                continue
-            self._propose(text)
+                text = line.strip()
+                if not text:
+                    continue
+                if text.startswith("/") or text.lower() in ("quit", "exit"):
+                    if self._command(text):
+                        break
+                    continue
+                if self._staged is not None:
+                    self._run_turn(text)
+                else:
+                    self._propose(text)
+        finally:
+            self._discard_staged(announce=bool(self._staged))
         return 0
 
     def _welcome(self) -> None:
@@ -742,7 +843,8 @@ class ImprovementTerminal:
             )
         )
         self.ui.info("offline-first: the team works in a private copy")
-        self.ui.info("nothing reaches the live tree until you type 'approve'")
+        self.ui.info("each line is another turn; /done creates the approval request")
+        self.ui.info("nothing reaches the live tree until you approve it")
         self.ui.info("/help for commands, /quit to leave")
         self._show_pending()
 
@@ -764,7 +866,21 @@ class ImprovementTerminal:
             return
         self.ui.info("working in a private copy; the live tree is unchanged")
         try:
-            request = self.improver.propose(hint=hint, source="terminal")
+            self._staged = self.improver.stage(source="terminal")
+        except ImproveError as exc:
+            self.ui.warn(str(exc))
+            return
+        except KeyboardInterrupt:
+            print()
+            self.ui.warn("proposal interrupted; the live tree is unchanged")
+            return
+        self._run_turn(hint)
+
+    def _run_turn(self, hint: str) -> None:
+        if self._staged is None:
+            return
+        try:
+            self._staged.run_turn(hint)
         except ProviderError as exc:
             self.ui.error(str(exc))
             return
@@ -773,9 +889,38 @@ class ImprovementTerminal:
             return
         except KeyboardInterrupt:
             print()
-            self.ui.warn("proposal interrupted; the live tree is unchanged")
+            self._discard_staged()
+            self.ui.warn("turn interrupted; the staging copy was discarded")
             return
+        self.ui.ok(
+            f"staged turn {len(self._staged.turns)}; "
+            f"{len(self._staged.changed)} file(s) changed in the private copy"
+        )
+        self.ui.info("keep going, or /done to create the approval request; /cancel to discard")
+
+    def _finish_staged(self) -> None:
+        if self._staged is None:
+            self.ui.info("no staged conversation; describe a change first")
+            return
+        try:
+            request = self._staged.finish()
+        except ImproveError as exc:
+            self.ui.warn(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - keep the staging session open
+            self.ui.error(f"could not create the approval request: {exc}")
+            return
+        self._staged = None
         self._review(request)
+
+    def _discard_staged(self, announce: bool = True) -> None:
+        if self._staged is None:
+            return
+        session = self._staged
+        self._staged = None
+        session.close()
+        if announce:
+            self.ui.info("discarded staged changes; the live tree was not touched")
 
     def _review(self, request: Request) -> None:
         print()
@@ -797,6 +942,15 @@ class ImprovementTerminal:
         argument = parts[1].strip() if len(parts) > 1 else ""
         if name in ("/quit", "/exit", "quit", "exit"):
             return True
+        if name == "/done":
+            self._finish_staged()
+            return False
+        if name == "/cancel":
+            if self._staged is None:
+                self.ui.info("no staged conversation to cancel")
+            else:
+                self._discard_staged()
+            return False
         if name in ("/help", "/h"):
             print(self.HELP.rstrip())
             return False

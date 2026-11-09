@@ -580,11 +580,13 @@ improve> add a small test for the config loader
   type 'approve' to apply, 'reject' to discard, or Enter to keep pending:
 ```
 
-Each plain-language line asks the team for one proposal. It works in the same
-private copy, prints the diff, and asks before touching the live tree. `/list`,
-`/show`, `/approve`, `/reject`, `/restore`, and `/quit` are available. Proposal
-generation uses no network or shell commands, so it works offline with the
-local model.
+The first plain-language line starts a staging conversation. Each further line
+is another turn in the same private copy, with the team's history and staged
+files intact. `/done` turns the conversation into a pending request, prints the
+diff, and asks before touching the live tree; `/cancel` discards the staging
+copy. `/list`, `/show`, `/approve`, `/reject`, `/restore`, and `/quit` are also
+available. Proposal generation uses no network or shell commands, so it works
+offline with the local model.
 
 `approve` prints the diff and asks you to type `approve`; `--yes` is the
 non-interactive equivalent. It refuses if a live file changed after the proposal

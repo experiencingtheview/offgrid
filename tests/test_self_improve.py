@@ -42,6 +42,7 @@ PLAN = {
 APPROVE = '{"verdict": "approve", "issues": [], "instructions": ""}'
 OLD = "def greeting():\n    return 'hello'\n"
 NEW = "def greeting():\n    return 'hello, world'\n"
+NEWER = "def greeting():\n    return 'hello, world!'\n"
 
 
 def script() -> list:
@@ -51,6 +52,16 @@ def script() -> list:
         when("coder", tool("finish", summary="made the greeting clearer")),
         when("reviewer", text(APPROVE)),
         when("lead", text("Updated app.py.")),
+    ]
+
+
+def two_turn_script() -> list:
+    return script() + [
+        when("planner", text(json.dumps(PLAN))),
+        when("coder", tool("write_file", path="app.py", content=NEWER)),
+        when("coder", tool("finish", summary="added the missing punctuation")),
+        when("reviewer", text(APPROVE)),
+        when("lead", text("Updated app.py again.")),
     ]
 
 
@@ -66,8 +77,8 @@ class SelfImproveTests(unittest.TestCase):
             self.model.stop()
         self.tmp.cleanup()
 
-    def improver(self, **overrides: Any) -> SelfImprover:
-        self.model = serve(script())
+    def improver(self, rules=None, **overrides: Any) -> SelfImprover:
+        self.model = serve(rules if rules is not None else script())
         values: Dict[str, Any] = {
             "endpoint": self.model.url,
             "model": "fake",
@@ -187,7 +198,7 @@ class SelfImproveTests(unittest.TestCase):
 
         with patch(
             "builtins.input",
-            side_effect=["make the greeting clearer", "", "/quit"],
+            side_effect=["make the greeting clearer", "/done", "", "/quit"],
         ):
             with redirect_stdout(output):
                 code = terminal.run()
@@ -198,6 +209,37 @@ class SelfImproveTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].data["source"], "terminal")
         self.assertIn("OffGrid self-improvement terminal", output.getvalue())
+
+    def test_interactive_terminal_keeps_a_multi_turn_staging_conversation(self):
+        improver = self.improver(two_turn_script())
+        terminal = ImprovementTerminal(improver, improver.ui)
+        output = StringIO()
+
+        with patch(
+            "builtins.input",
+            side_effect=[
+                "make the greeting clearer",
+                "add punctuation",
+                "/done",
+                "",
+                "/quit",
+            ],
+        ):
+            with redirect_stdout(output):
+                code = terminal.run()
+
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), OLD)
+        pending = improver.pending()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(
+            pending[0].data["conversation"],
+            ["make the greeting clearer", "add punctuation"],
+        )
+        self.assertEqual(
+            (pending[0].directory / "after" / "app.py").read_text(encoding="utf-8"),
+            NEWER,
+        )
 
     def test_interactive_terminal_applies_only_after_explicit_approval(self):
         improver = self.improver()
@@ -233,7 +275,7 @@ class SelfImproveTests(unittest.TestCase):
 
         with patch(
             "builtins.input",
-            side_effect=["make the greeting clearer", "", "/quit"],
+            side_effect=["make the greeting clearer", "/done", "", "/quit"],
         ):
             with redirect_stdout(output):
                 code = main(["improve", "terminal", *common])
