@@ -193,7 +193,13 @@ The project site's download button serves the latest release asset, `offgrid-por
 
 The release is built by `.github/workflows/release.yml` from the repository's own builder whenever a `v*` tag is pushed. The version is written once, in `offgrid/__init__.py`; the workflow refuses a tag that disagrees with it, then runs `unzip -t` and checks that the launchers are present and executable, so the asset a visitor gets is the one the tests saw. Dispatching the workflow with an existing tag re-publishes that release, which is the only reason to run it by hand. The release notes are that version's section in `CHANGELOG.md`, so the release page and the repository cannot drift apart, and a version with no changelog section is refused rather than published with empty notes.
 
-Both files are attached to the release. `SHA256SUMS` holds the zip's digest, so you can check what you downloaded before running it: put both files in one folder and run `sha256sum -c SHA256SUMS` (`shasum -a 256 -c SHA256SUMS` on macOS). Windows has no `sha256sum`, so run `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` in PowerShell and compare the printed hash with the one in `SHA256SUMS`. The workflow runs the same check on the archive it built, so the value it publishes is the value it verified. The download button reads that file when the page is served and shows the current digest beside it, with the check command, so the page cannot advertise a digest for a different build.
+Both files are attached to the release. `SHA256SUMS` holds the zip's digest, so you can check what you downloaded before running it: put both files in one folder and run `sha256sum -c SHA256SUMS` (`shasum -a 256 -c SHA256SUMS` on macOS). Windows has no `sha256sum`; this PowerShell command exits non-zero when the zip does not match:
+
+```powershell
+$w=(Select-String -Path .\SHA256SUMS -Pattern offgrid-portable.zip).Line.Split()[0]; if((Get-FileHash .\offgrid-portable.zip -Algorithm SHA256).Hash -ne $w){throw 'SHA-256 mismatch'}
+```
+
+It takes the expected digest out of `SHA256SUMS`, hashes the zip and throws on a mismatch, so a bad download stops instead of being compared by eye. `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` on its own just prints the hash. The workflow runs the same check on the archive it built, so the value it publishes is the value it verified. The download button reads that file when the page is served and shows the current digest beside it, with the check command, so the page cannot advertise a digest for a different build.
 
 ### Downloadable portable app and device install
 
