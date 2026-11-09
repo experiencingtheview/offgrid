@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 from ._bundle import assets_root as _assets_dir, package_root
@@ -247,6 +247,49 @@ def flatten_binary_dir(root: Path, binary: str) -> Optional[Path]:
     return candidate if candidate.is_file() else found[0]
 
 
+def _validate_tar_member(member: tarfile.TarInfo, root: Path) -> None:
+    """Refuse a tar entry that would write or link outside *root*."""
+    raw = member.name.replace("\\", "/")
+    parts = PurePosixPath(raw).parts
+    if not parts or raw.startswith("/") or ".." in parts or os.path.isabs(member.name):
+        raise FullBundleError(f"refusing unsafe archive entry: {member.name!r}")
+    target = (root / member.name).resolve()
+    if target != root and root not in target.parents:
+        raise FullBundleError(
+            f"refusing archive entry outside the destination: {member.name!r}"
+        )
+    if member.isdev() or member.isfifo():
+        raise FullBundleError(f"refusing special file in archive: {member.name!r}")
+    if member.issym() or member.islnk():
+        # Symlink targets are relative to the link's directory; hardlinks to the root.
+        base = target.parent if member.issym() else root
+        linked = (base / member.linkname.replace("\\", "/")).resolve()
+        if linked != root and root not in linked.parents:
+            raise FullBundleError(
+                f"refusing archive link outside the destination: "
+                f"{member.name!r} -> {member.linkname!r}"
+            )
+
+
+def _safe_extract_tar(tf: tarfile.TarFile, destination: Path) -> None:
+    """Extract a tar archive without letting entries escape *destination*.
+
+    Python 3.12's ``data`` filter does this, but OffGrid supports 3.9+, so the
+    validation has to happen here as well.
+    """
+    root = destination.resolve()
+    data_filter = hasattr(tarfile, "data_filter")
+    # Validate one member at a time: a link extracted earlier must not redirect
+    # a later member outside the destination (the 3.12 ``data`` filter does
+    # this itself, but 3.9-3.11 have no filter at all).
+    for member in tf.getmembers():
+        _validate_tar_member(member, root)
+        if data_filter:
+            tf.extract(member, root, filter="data")
+        else:
+            tf.extract(member, root)
+
+
 def extract(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
@@ -255,7 +298,7 @@ def extract(archive: Path, destination: Path) -> None:
             zf.extractall(destination)
     elif name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(archive) as tf:
-            tf.extractall(destination, filter="data") if hasattr(tarfile, "data_filter") else tf.extractall(destination)
+            _safe_extract_tar(tf, destination)
     else:
         raise SystemExit(f"unknown archive type: {archive.name}")
 

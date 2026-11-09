@@ -186,6 +186,101 @@ class FullBundleBuilderTests(unittest.TestCase):
             self.assertIn("the GGUF model", missing)
 
 
+class FullBundleExtractionTests(unittest.TestCase):
+    """Tar extraction must never write or link outside the destination."""
+
+    def _assert_traversal_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "bad.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                info = tarfile.TarInfo("../escape.txt")
+                info.size = 5
+                tf.addfile(info, io.BytesIO(b"pwned"))
+            with self.assertRaises(fullbundle.FullBundleError):
+                fullbundle.extract(archive, root / "out")
+            self.assertFalse((root / "escape.txt").exists())
+
+    def test_extracts_a_normal_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "good.tar.gz"
+            payload = b"ok"
+            with tarfile.open(archive, "w:gz") as tf:
+                info = tarfile.TarInfo("pkg/file.txt")
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+            destination = root / "out"
+            fullbundle.extract(archive, destination)
+            self.assertEqual((destination / "pkg" / "file.txt").read_bytes(), payload)
+
+    def test_refuses_traversal_entry(self):
+        self._assert_traversal_refused()
+
+    def test_refuses_traversal_entry_without_data_filter(self):
+        if not hasattr(tarfile, "data_filter"):
+            self._assert_traversal_refused()
+            return
+        saved = tarfile.data_filter
+        del tarfile.data_filter
+        try:
+            self._assert_traversal_refused()
+        finally:
+            tarfile.data_filter = saved
+
+    def test_refuses_absolute_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "absolute.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                info = tarfile.TarInfo(str(root / "absolute-escape.txt"))
+                info.size = 0
+                tf.addfile(info, io.BytesIO(b""))
+            with self.assertRaises(fullbundle.FullBundleError):
+                fullbundle.extract(archive, root / "out")
+            self.assertFalse((root / "absolute-escape.txt").exists())
+
+    def test_refuses_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "symlink.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                info = tarfile.TarInfo("link")
+                info.type = tarfile.SYMTYPE
+                info.linkname = "../outside"
+                tf.addfile(info)
+            with self.assertRaises(fullbundle.FullBundleError):
+                fullbundle.extract(archive, root / "out")
+
+    def test_refuses_hardlink_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "hardlink.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                info = tarfile.TarInfo("hard")
+                info.type = tarfile.LNKTYPE
+                info.linkname = "../outside"
+                tf.addfile(info)
+            with self.assertRaises(fullbundle.FullBundleError):
+                fullbundle.extract(archive, root / "out")
+
+    def test_keeps_an_internal_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "internal.tar.gz"
+            with tarfile.open(archive, "w:gz") as tf:
+                real = tarfile.TarInfo("lib/real")
+                real.size = 2
+                tf.addfile(real, io.BytesIO(b"hi"))
+                link = tarfile.TarInfo("bin/tool")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "../lib/real"
+                tf.addfile(link)
+            destination = root / "out"
+            fullbundle.extract(archive, destination)
+            self.assertTrue((destination / "bin" / "tool").is_symlink())
+
+
 class FullBundleScriptTests(unittest.TestCase):
     def test_standalone_setup_script_still_plans_the_full_bundle(self):
         root = Path(__file__).resolve().parent.parent
