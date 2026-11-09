@@ -124,6 +124,12 @@ def posture(config: Config) -> List[str]:
             if config.fleet and config.fleet_exec
             else ("on: model calls may run on LAN peers" if config.fleet else "off")
         ),
+        f"sync           "
+        + (
+            f"{len(config.sync_peers)} peer(s); accepted notes only, incoming lessons stay pending"
+            if config.sync_peers
+            else "off"
+        ),
         f"memory         pending lessons are never used before you accept them",
         f"security       reviews {'on' if config.security_review else 'off'}, logged to {config.security_history}",
     ]

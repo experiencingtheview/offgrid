@@ -6,6 +6,21 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- `offgrid sync peers list|add|remove`: manage sync peers from the CLI without
+  hand-editing JSON. Add and remove accept one or more URLs in one command,
+  check every URL before touching the config, and merge or remove the batch in
+  a single write, preserving unrelated settings. Remove reports peers that were
+  not configured and exits 1; list uses the same config file.
+- `offgrid sync status` now reports the managed peer config path and validates
+  each configured URL, flagging plain HTTP unless explicitly allowed and
+  surfacing an unreadable config without failing the default status command.
+  `--strict` exits 1 when any configured peer is invalid or the peer config
+  cannot be read, for scripts and timers.
+- Opt-in `offgrid sync schedule`: repeats the accepted-only push/pull exchange on
+  an interval, or once with `--once` for cron/systemd. Every pass refuses to run
+  when networking is denied or `--offline` is set, and each push, pull and
+  scheduled pass is recorded in `.offgrid/sync.jsonl` without lesson text or the
+  token.
 - A public, read-only CI status badge served by a small Sites Worker and D1
   database. The Tests workflow publishes the latest `main` result without
   exposing a GitHub token, so the badge works without a GitHub sign-in.

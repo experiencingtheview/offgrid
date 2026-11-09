@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import socket
 import sys
 import time
 from contextlib import nullcontext
@@ -39,6 +40,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid council [members|ping|ask]                 independent advisors
   offgrid hardware                                   what this machine can do
   offgrid fleet [list|add|remove|ping|scan|serve]    use your other devices' power
+  offgrid sync [status|peers|serve|push|pull|run|schedule|export|import]  share accepted learning, reviewed locally
   offgrid security [review|map|watch|history|plan|encrypt|decrypt]   reviews, changes, encryption
   offgrid trust                                     what it promises and what it may do
   offgrid protect [--kit|--check|--restore PATH]    whose side it is on, and a household kit
@@ -292,6 +294,60 @@ def build_parser() -> argparse.ArgumentParser:
         help="list/ping/scan: machine-readable peers and outcomes",
     )
     add_common(fleet)
+
+    sync = subparsers.add_parser(
+        "sync", help="share accepted learning notes with other OffGrid systems"
+    )
+    sync.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "peers", "serve", "push", "pull", "run", "schedule", "export", "import"],
+    )
+    sync.add_argument(
+        "terms",
+        nargs="*",
+        help=        "export/import: PATH; peers: add URL [URL ...], list, remove URL [URL ...]",
+    )
+    sync.add_argument(
+        "--peer",
+        action="append",
+        default=[],
+        help="peer URL (repeatable; default: sync_peers in config)",
+    )
+    sync.add_argument(
+        "--token",
+        default="",
+        help="shared sync token (default: .offgrid/sync-token or OFFGRID_SYNC_TOKEN)",
+    )
+    sync.add_argument("--port", type=int, default=0, help="serve port (default 8778)")
+    sync.add_argument(
+        "--host", default="0.0.0.0", help="serve bind address (default 0.0.0.0)"
+    )
+    sync.add_argument(
+        "--allow-http",
+        action="store_true",
+        help="allow plain HTTP to a non-loopback peer (only on a trusted network)",
+    )
+    sync.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="schedule: seconds between passes (default: sync_interval or 900)",
+    )
+    sync.add_argument(
+        "--once",
+        action="store_true",
+        help="schedule: run one pass and exit (for cron or a systemd timer)",
+    )
+    sync.add_argument(
+        "--strict",
+        action="store_true",
+        help="status: exit 1 if any configured peer is invalid",
+    )
+    sync.add_argument("--json", action="store_true", help="machine-readable output")
+    add_common(sync)
 
     security = subparsers.add_parser("security", help="security reviews, connection map, encryption")
     security.add_argument(
@@ -3037,6 +3093,399 @@ def cmd_trust(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_sync_results(
+    ui: UI, action: str, results: List[Dict[str, Any]], as_json: bool
+) -> int:
+    failed = sum(1 for item in results if item.get("error"))
+    if as_json:
+        print(json.dumps({"action": action, "peers": results, "failed": failed}, indent=2))
+    else:
+        for item in results:
+            if item.get("push") is not None:
+                counts = item["push"]
+                print(
+                    f"  push {item['peer']}: {counts.get('new', 0)} new, "
+                    f"{counts.get('duplicates', 0)} duplicate(s)"
+                )
+            if item.get("pull") is not None:
+                counts = item["pull"]
+                print(
+                    f"  pull {item['peer']}: {counts.get('new', 0)} new pending, "
+                    f"{counts.get('duplicates', 0)} duplicate(s)"
+                )
+            if item.get("error"):
+                ui.error(f"  {item['peer']}: {item['error']}")
+        if action in ("pull", "run", "schedule") and any(
+            item.get("pull") and item["pull"].get("new") for item in results
+        ):
+            ui.info("incoming lessons are pending; review with: offgrid memory review")
+    return 1 if failed else 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .memory import MemoryStore
+    from .sync import (
+        SyncError,
+        SyncServer,
+        add_configured_peers,
+        configured_peer_file,
+        configured_peers,
+        exchange,
+        import_bundle,
+        load_or_create_token,
+        network_allowed,
+        peer_config_path,
+        read_export,
+        recent_events,
+        record_event,
+        remove_configured_peers,
+        scheduled_once,
+        token_ready,
+        validate_peer_url,
+        write_export,
+    )
+
+    action = (args.action or "status").lower()
+    terms = list(getattr(args, "terms", []) or [])
+    as_json = bool(getattr(args, "json", False))
+    peers = configured_peers(config, getattr(args, "peer", ()) or ())
+    store = MemoryStore(Path(workspace.root) / config.memory_dir / "memory.db")
+    try:
+        if action == "status":
+            stats = store.stats()
+            events = recent_events(config, limit=10)
+            root = Path(workspace.root)
+            peer_config = peer_config_path(root)
+            allow_http = bool(
+                getattr(args, "allow_http", False) or config.sync_allow_http
+            )
+            try:
+                managed_peers = configured_peer_file(root)
+                peer_config_error = ""
+            except SyncError as exc:
+                managed_peers = []
+                peer_config_error = str(exc)
+            validation_peers = list(managed_peers)
+            for peer in peers:
+                if peer not in validation_peers:
+                    validation_peers.append(peer)
+            peer_validation = []
+            for peer in validation_peers:
+                try:
+                    validate_peer_url(peer, allow_http=allow_http)
+                except SyncError as exc:
+                    peer_validation.append(
+                        {"peer": peer, "valid": False, "error": str(exc)}
+                    )
+                else:
+                    peer_validation.append(
+                        {"peer": peer, "valid": True, "error": ""}
+                    )
+            invalid_peers = [
+                item["peer"] for item in peer_validation if not item["valid"]
+            ]
+            strict = bool(getattr(args, "strict", False))
+            strict_failed = strict and (
+                bool(invalid_peers) or bool(peer_config_error)
+            )
+            payload = {
+                "action": "status",
+                "accepted": stats.get("total", 0),
+                "pending": stats.get("pending", 0),
+                "rejected": stats.get("rejected", 0),
+                "peers": peers,
+                "peer_config": str(peer_config),
+                "peer_config_error": peer_config_error,
+                "managed_peers": managed_peers,
+                "peer_validation": peer_validation,
+                "strict": strict,
+                "strict_failed": strict_failed,
+                "network": "offline" if config.offline or config.network == "deny" else "allowed",
+                "token_ready": token_ready(config),
+                "events": events,
+            }
+            if as_json:
+                print(json.dumps(payload, indent=2))
+                return 1 if strict_failed else 0
+            ui.info(
+                f"learning  {payload['accepted']} accepted, {payload['pending']} pending, "
+                f"{payload['rejected']} rejected"
+            )
+            ui.info(f"network   {payload['network']}; token {'ready' if payload['token_ready'] else 'not created yet'}")
+            ui.info(f"peer file {peer_config}")
+            if peer_config_error:
+                ui.warn(peer_config_error)
+            if peer_validation:
+                for item in peer_validation:
+                    if item["valid"]:
+                        print(f"  peer {item['peer']}  valid")
+                    else:
+                        print(f"  peer {item['peer']}  INVALID")
+                        print(f"       {item['error']}")
+            else:
+                ui.info(
+                    "peers     none configured; use `offgrid sync peers add URL` "
+                    "or pass --peer"
+                )
+            if payload["pending"]:
+                ui.info("review pending notes with: offgrid memory review")
+            if events:
+                print()
+                print(ui.paint("  recent sync events", "\033[1m"))
+                for event in reversed(events[-8:]):
+                    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(event.get("t", 0)))
+                    counts = event.get("counts") or {}
+                    detail = ", ".join(f"{key} {value}" for key, value in counts.items())
+                    error = f" - {event['error']}" if event.get("error") else ""
+                    print(
+                        f"  {stamp}  {event.get('action', '?')}  "
+                        f"{event.get('peer') or '-'}  {detail}{error}"
+                    )
+            if strict_failed:
+                if peer_config_error:
+                    ui.error("strict mode: peer config could not be read")
+                if invalid_peers:
+                    ui.error(
+                        "strict mode: invalid peer(s): " + ", ".join(invalid_peers)
+                    )
+            return 1 if strict_failed else 0
+
+        if action == "peers":
+            subaction = terms[0].lower() if terms else "list"
+            root = Path(workspace.root)
+            path = peer_config_path(root)
+            allow_http = bool(
+                getattr(args, "allow_http", False) or config.sync_allow_http
+            )
+            if subaction == "list":
+                configured = configured_peer_file(root)
+                payload = {
+                    "action": "peers",
+                    "subaction": "list",
+                    "peers": configured,
+                    "config": str(path),
+                }
+                if as_json:
+                    print(json.dumps(payload, indent=2))
+                else:
+                    if configured:
+                        for peer in configured:
+                            print(f"  peer {peer}")
+                    else:
+                        ui.info("no sync peers configured")
+                    ui.info(f"config {path}")
+                return 0
+
+            if subaction == "add":
+                if len(terms) < 2:
+                    ui.error("usage: offgrid sync peers add URL [URL ...]")
+                    return 2
+                try:
+                    configured, requested, added, already, path = add_configured_peers(
+                        root, terms[1:], allow_http=allow_http
+                    )
+                except SyncError as exc:
+                    ui.error(str(exc))
+                    return 1
+                payload = {
+                    "action": "peers",
+                    "subaction": "add",
+                    "requested": requested,
+                    "added": bool(added),
+                    "added_peers": added,
+                    "already_configured": already,
+                    "peers": configured,
+                    "config": str(path),
+                }
+                if len(requested) == 1:
+                    payload["peer"] = requested[0]
+                if as_json:
+                    print(json.dumps(payload, indent=2))
+                else:
+                    for url in added:
+                        ui.ok(f"added sync peer {url}")
+                    for url in already:
+                        ui.info(f"sync peer already configured: {url}")
+                    ui.info(f"config {path}")
+                return 0
+
+            if subaction == "remove":
+                if len(terms) < 2:
+                    ui.error("usage: offgrid sync peers remove URL [URL ...]")
+                    return 2
+                try:
+                    configured, requested, removed, missing, path = remove_configured_peers(
+                        root, terms[1:]
+                    )
+                except SyncError as exc:
+                    ui.error(str(exc))
+                    return 1
+                payload = {
+                    "action": "peers",
+                    "subaction": "remove",
+                    "requested": requested,
+                    "removed": bool(removed),
+                    "removed_peers": removed,
+                    "missing": missing,
+                    "peers": configured,
+                    "config": str(path),
+                }
+                if len(requested) == 1:
+                    payload["peer"] = requested[0]
+                if as_json:
+                    print(json.dumps(payload, indent=2))
+                else:
+                    for url in removed:
+                        ui.ok(f"removed sync peer {url}")
+                    for url in missing:
+                        ui.error(f"sync peer is not configured: {url}")
+                    if removed:
+                        ui.info(f"config {path}")
+                return 0 if not missing else 1
+
+            ui.error("usage: offgrid sync peers list | add URL [URL ...] | remove URL [URL ...]")
+            return 2
+
+        if action == "export":
+            if not terms:
+                ui.error("usage: offgrid sync export PATH")
+                return 2
+            target = Path(terms[0]).expanduser()
+            bundle = write_export(store, target, source=socket.gethostname())
+            counts = {"exported": len(bundle["lessons"])}
+            record_event(config, "export", peer=str(target), counts=counts)
+            if as_json:
+                print(json.dumps({"action": "export", "path": str(target), "counts": counts}, indent=2))
+            else:
+                ui.ok(f"wrote {counts['exported']} accepted lesson(s) to {target}")
+                ui.info("this file contains learning notes; it is private, so move it securely")
+            return 0
+
+        if action == "import":
+            if not terms:
+                ui.error("usage: offgrid sync import PATH")
+                return 2
+            source = Path(terms[0]).expanduser()
+            bundle = read_export(source)
+            counts = import_bundle(store, bundle, source=f"file:{source.name}")
+            record_event(config, "import", peer=str(source), counts=counts)
+            if as_json:
+                print(json.dumps({"action": "import", "path": str(source), "counts": counts}, indent=2))
+            else:
+                ui.ok(
+                    f"imported {counts['new']} new lesson(s) as pending; "
+                    f"{counts['duplicates']} duplicate(s), {counts['skipped']} skipped"
+                )
+                if counts["new"]:
+                    ui.info("nothing is active yet; review with: offgrid memory review")
+            return 0
+
+        if action == "serve":
+            if config.offline or config.network == "deny":
+                ui.error("sync serve needs networking; remove --offline or set network to allow")
+                return 1
+            token = str(getattr(args, "token", "") or "") or load_or_create_token(config)
+            requested_port = int(getattr(args, "port", 0) or 0)
+            server = SyncServer(
+                config, store, token, port=requested_port or None
+            )
+            try:
+                port = server.start(host=str(getattr(args, "host", "0.0.0.0") or "0.0.0.0"))
+            except OSError as exc:
+                ui.error(f"could not listen for sync peers: {exc}")
+                return 1
+            ui.ok(f"sync server listening on {args.host}:{port}")
+            ui.info("peers must send the shared token; only accepted lessons are served")
+            ui.info("incoming lessons are pending until you accept them with `offgrid memory review`")
+            if args.host not in ("127.0.0.1", "localhost", "::1"):
+                ui.warn("HTTP is not encrypted; put this behind a TLS reverse proxy before internet use")
+            ui.info("press Ctrl-C to stop")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print()
+                ui.info("sync server stopped")
+            finally:
+                server.stop()
+            return 0
+
+        if action == "schedule":
+            interval = float(
+                config.sync_interval
+                if getattr(args, "interval", None) is None
+                else args.interval
+            )
+            if interval <= 0:
+                ui.error("--interval must be greater than zero")
+                return 2
+            if not network_allowed(config):
+                message = (
+                    "scheduled sync needs networking; remove --offline or set network to allow"
+                )
+                record_event(config, "schedule", error=message)
+                ui.error(message)
+                return 1
+            if not peers:
+                message = (
+                    "no sync peers configured; add one with `offgrid sync peers add URL` "
+                    "or pass --peer URL"
+                )
+                record_event(config, "schedule", error=message)
+                ui.error(message)
+                return 2
+            token = str(getattr(args, "token", "") or "") or None
+            allow_http = bool(getattr(args, "allow_http", False) or config.sync_allow_http)
+            if getattr(args, "once", False):
+                try:
+                    results = scheduled_once(
+                        config, store, peers, token=token, allow_http=allow_http
+                    )
+                except SyncError as exc:
+                    ui.error(str(exc))
+                    return 1
+                return _report_sync_results(ui, "schedule", results, as_json)
+            ui.ok(f"scheduled sync every {interval:g}s; Ctrl-C to stop")
+            ui.info("each pass requires networking and records every exchange")
+            try:
+                while True:
+                    try:
+                        results = scheduled_once(
+                            config, store, peers, token=token, allow_http=allow_http
+                        )
+                    except SyncError as exc:
+                        ui.error(str(exc))
+                        return 1
+                    _report_sync_results(ui, "schedule", results, as_json)
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                print()
+                ui.info("scheduled sync stopped")
+            return 0
+
+        if config.offline or config.network == "deny":
+            ui.error("sync push/pull/run needs networking; remove --offline or set network to allow")
+            return 1
+        if not peers:
+            ui.error(
+                "no sync peers configured; add one with `offgrid sync peers add URL` "
+                "or pass --peer URL"
+            )
+            return 2
+        token = str(getattr(args, "token", "") or "") or load_or_create_token(config)
+        allow_http = bool(getattr(args, "allow_http", False) or config.sync_allow_http)
+        results = exchange(
+            config, store, peers, action=action, token=token, allow_http=allow_http
+        )
+        return _report_sync_results(ui, action, results, as_json)
+    except SyncError as exc:
+        ui.error(str(exc))
+        return 1
+    finally:
+        store.close()
+
+
 COMMANDS = {
     "run": cmd_run,
     "chat": cmd_chat,
@@ -3053,6 +3502,7 @@ COMMANDS = {
     "council": cmd_council,
     "hardware": cmd_hardware,
     "fleet": cmd_fleet,
+    "sync": cmd_sync,
     "security": cmd_security,
     "trust": cmd_trust,
     "protect": cmd_protect,

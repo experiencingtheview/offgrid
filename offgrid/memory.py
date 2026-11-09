@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from .private import ensure_private_dir, harden_file
 from .semantics import Lexicon, load_lexicon, match
@@ -626,6 +626,59 @@ class MemoryStore:
 
     def export(self) -> str:
         return json.dumps([self._as_dict(row) for row in self.all(limit=10000)], indent=2)
+
+    def export_sync(self, limit: int = 5000) -> List[Dict[str, object]]:
+        """Accepted notes in a stable, shareable shape. Never includes pending notes."""
+        items: List[Dict[str, object]] = []
+        for row in self.all(limit=limit):
+            data = dict(self._as_dict(row))
+            data["key"] = row.key
+            items.append(data)
+        return items
+
+    def import_sync(self, entries: Iterable[Any], source: str = "sync") -> Dict[str, int]:
+        """Quarantine incoming notes until a human accepts them.
+
+        Remote keys are deliberately not trusted: deduplication uses the local
+        kind+text key, so a peer cannot overwrite an unrelated accepted note by
+        guessing its key. Rejected wording stays rejected.
+        """
+        counts = {"received": 0, "new": 0, "duplicates": 0, "skipped": 0, "rejected": 0}
+        source = (source or "sync").strip()[:180] or "sync"
+        for raw in entries:
+            counts["received"] += 1
+            if not isinstance(raw, dict):
+                counts["skipped"] += 1
+                continue
+            text = str(raw.get("text") or "").strip()
+            if len(text) < 8 or len(text) > 4000:
+                counts["skipped"] += 1
+                continue
+            kind = str(raw.get("kind") or "fact")
+            if kind not in KINDS:
+                kind = "fact"
+            try:
+                confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0.6)))
+            except (TypeError, ValueError):
+                confidence = 0.6
+            if self.was_rejected(text):
+                counts["rejected"] += 1
+                continue
+            new_id = self.remember(
+                text,
+                kind=kind,
+                source=source,
+                confidence=confidence,
+                key=make_key(kind, text),
+                status="pending",
+                verify_command=str(raw.get("verify_command") or "")[:300],
+                verify_output=str(raw.get("verify_output") or ""),
+            )
+            if new_id is None:
+                counts["duplicates"] += 1
+            else:
+                counts["new"] += 1
+        return counts
 
     @staticmethod
     def _as_dict(row: Memory) -> Dict[str, object]:

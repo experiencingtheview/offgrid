@@ -62,6 +62,7 @@ The interesting part is not the model — it is the **orchestration**. A 7B mode
 | **Real edits** | writes files, applies targeted edits, searches the repo, runs commands, reads git state |
 | **Self-checking** | reviews its own diff, then runs your test command and fixes failures |
 | **Remembers** | durable notes with confidence and provenance; a project's verify command is learned once |
+| **Shares learning** | accepted notes only, explicit peers and token; incoming lessons stay pending for review |
 | **Carries knowledge** | offline library of survival, medicine and coding references it can search |
 | **Admits ignorance** | the honesty rule is in every prompt, every tool and the test suite |
 | **Portable** | pure Python 3.9+ standard library; build a USB bundle with a bundled runtime and model |
@@ -250,6 +251,7 @@ offgrid library [list|search|verify|index]    the offline document library
 offgrid council [members|ping|ask]           independent advisors
 offgrid hardware                             what this machine can do, and will run
 offgrid fleet [list|add|remove|ping|scan|serve] use your other devices' power
+offgrid sync [status|peers|serve|push|pull|run|schedule|export|import]  share accepted learning, reviewed locally
 offgrid security [review|map|watch|history|plan|encrypt|decrypt] reviews, changes, encryption
 offgrid protect [--kit|--check|--backup PATH|--restore PATH] continuity kit, backups, restore
 offgrid trust                                the promises, and the current posture
@@ -498,6 +500,56 @@ $ offgrid memory rejected               # the rejection ledger
 If a rejection was a mistake, `offgrid memory forgive ID` removes that record from the ledger. You can also pass the lesson's exact text, or a search query: a normalised exact match is tried first, then the same offline meaning matcher used by recall, and every match is forgiven. Before deleting, it prints each matched ledger record, so a broad query is visible rather than silent. Add `--dry-run` to preview those same matches without removing them; it also works with ledger IDs. Quote the text so the shell keeps it together. Forgiving does **not** put the lesson back into active or pending memory, and it does not make the old text trusted again; it only lifts the ban so the archivist may propose the idea later. If that happens, the new proposal still goes through the normal pending review.
 
 `--no-review` skips the end-of-run questions without accepting anything. The archivist may still answer `{"lessons": []}`, its output is schema-validated and noise-filtered, and reflection can never fail a run.
+
+### Sharing learning between systems
+
+Memory is local by default, and syncing is a command you run, not a background uploader. `offgrid sync` shares **accepted lessons only**; every incoming lesson is written as **pending** and cannot influence a run until you accept it with `offgrid memory review`. That is what makes a remote update visible and controllable instead of silently trusted. The `sync schedule` loop below is explicitly opt-in: it is off until you start it, and every pass refuses to run unless networking is enabled.
+
+```console
+# on the machine that will receive accepted lessons
+$ offgrid sync serve
+
+# on any machine that has the shared token and peers configured
+$ offgrid sync run             # push accepted notes, then pull peers' accepted notes
+$ offgrid sync push            # only send
+$ offgrid sync pull            # only receive; new items wait in the pending queue
+$ offgrid sync peers           # list configured peers
+$ offgrid sync peers add https://desk.example https://laptop.example
+$ offgrid sync peers remove https://desk.example https://laptop.example
+$ offgrid sync schedule --interval 900  # explicit loop; requires networking
+$ offgrid sync schedule --once          # one pass for cron or a systemd timer
+$ offgrid sync status          # managed peer file, validation, counts, last operations; no token shown
+$ offgrid sync status --strict # exit 1 if a configured peer is invalid
+
+# offline transfer by USB or any channel you already trust
+$ offgrid sync export ./offgrid-learning.json
+$ offgrid sync import ./offgrid-learning.json
+```
+
+Manage peers with `offgrid sync peers list|add|remove`, or edit the workspace config directly. `add` and `remove` accept one or more URLs in a single command: every URL is checked before the config is touched, duplicates are reported instead of repeated, and the whole batch is written once. `remove` removes every configured peer in the batch, reports peers that were not configured, and exits 1 when any are missing. The CLI writes only `sync_peers` and preserves the other settings; it creates `.offgrid.json` if no workspace config exists:
+
+```json
+{
+  "sync_peers": ["https://desk.example", "https://laptop.example"],
+  "sync_port": 8778,
+  "sync_interval": 900,
+  "sync_allow_http": false
+}
+```
+
+`offgrid sync status` also reports the config file that manages peers and validates each configured URL. Plain HTTP to a non-loopback peer is marked invalid unless `--allow-http` or `sync_allow_http` permits it, and an unreadable peer config is reported without failing the default status command. Add `--strict` to exit 1 when any configured peer is invalid or the peer config cannot be read, so the command can gate scripts and timers.
+
+The first `serve`, `push`, `run`, or `schedule` pass creates `.offgrid/sync-token` with `0600` permissions. Put the **same** token on each machine (copy the file privately, use `--token`, or set `OFFGRID_SYNC_TOKEN` in the environment). Never put it in a URL or a shell history you do not control. `sync run`, `sync push`, and `sync schedule` send that token as a bearer credential; the peer must present it too.
+
+Rules that are enforced, not just documented:
+
+- only accepted notes are exported; pending and rejected notes never leave the machine;
+- incoming notes are always pending, deduplicated locally, and blocked if their wording was already rejected;
+- public peers must use `https://`. Plain HTTP is allowed only for loopback, or with the explicit `--allow-http` / `sync_allow_http` escape hatch on a trusted network;
+- the sync server itself speaks HTTP, so put it behind a TLS reverse proxy before exposing it to the internet. The bearer token authenticates a peer; it does not encrypt traffic;
+- scheduled sync is opt-in and checks `network: allow` on every pass; `--offline` or `network: deny` stops it before any exchange;
+- every push and pull, plus each scheduled pass, writes counts, peer, and error only to `.offgrid/sync.jsonl`; lesson text and the token are not logged;
+- `sync` only talks to the peers you list. There is no central account, discovery, relay, or telemetry; add every peer to every system that should update it.
 
 ## Improving itself, with your approval
 
@@ -751,7 +803,7 @@ This is still software. It cannot owe allegiance, feel loyalty or protect anyone
 
 ## Trust and security, without the theatre
 
-Trust is a behaviour, not a tone. Every agent prompt carries the same block: say what you did, what you did not do and what you could not check; disagree when the user is wrong; never pretend to be human or to have feelings; never claim a capability you do not have; ask before anything irreversible; and never hide what left the machine. `offgrid trust` prints those promises next to the current posture — endpoint, network, council, fleet, command policy, memory gate and last review — so the claims are checkable rather than decorative.
+Trust is a behaviour, not a tone. Every agent prompt carries the same block: say what you did, what you did not do and what you could not check; disagree when the user is wrong; never pretend to be human or to have feelings; never claim a capability you do not have; ask before anything irreversible; and never hide what left the machine. `offgrid trust` prints those promises next to the current posture — endpoint, network, council, fleet, sync, command policy, memory gate and last review — so the claims are checkable rather than decorative.
 
 Every run ends with a short, deterministic postscript: what was verified or not, what the reviewer said, whether the council was an outside opinion, whether anything left the machine, what is uncommitted, and any security findings. It appears in the terminal report, the `--json` output under `disclosures`, and the session log.
 
@@ -799,7 +851,7 @@ This runs on your real machine, so the defaults are conservative:
 - **Approval required**: `sudo`, `git push`, `git reset --hard`, `git clean -fd`, recursive `rm`, `chmod -R 777`, `killall`.
 - **Offline mode** — `--offline` refuses `curl`/`wget`/`ssh`, package installs and remote git, so an offline machine never fails on a download it cannot do.
 - **Loopback only** — a provider pointing anywhere other than localhost is refused unless you pass `--allow-remote`.
-- **No hidden egress** — no telemetry, no update checks, no analytics. The only socket in the codebase goes to your endpoint.
+- **No hidden egress** — no telemetry, no update checks, no analytics. Network features are opt-in: the model endpoint, `--fleet`, `--council-public`, explicit `offgrid sync` peers, and scheduled sync passes. Sync sends accepted notes only, and incoming notes stay pending.
 
 ## Configuration
 
@@ -817,6 +869,10 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
   "scale": true,
   "fleet": false,
   "fleet_port": 8776,
+  "sync_peers": [],
+  "sync_port": 8778,
+  "sync_interval": 900,
+  "sync_allow_http": false,
   "security_review": true,
   "principal": "Zach",
   "household": ["my dog"],
@@ -835,7 +891,7 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
 }
 ```
 
-Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
+Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_SYNC_PEERS`, `OFFGRID_SYNC_PORT`, `OFFGRID_SYNC_ALLOW_HTTP`, `OFFGRID_SYNC_TOKEN`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
 
 `-1` on `review_rounds`, `test_fix_rounds`, `review_passes`, `plan_candidates` and `quality_rounds` means "use the effort profile"; any explicit number wins over it. Verification auto-detects `pytest`, `cargo test`, `go test ./...` and `npm test`.
 

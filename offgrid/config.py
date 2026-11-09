@@ -55,6 +55,14 @@ class Config:
     fleet_file: str = ".offgrid/fleet.json"
     fleet_timeout: int = 180
     fleet_exec: bool = False  # let agents run commands on registered peers
+    # -- learning sync between installations ------------------------------
+    sync_peers: Tuple[str, ...] = ()
+    sync_port: int = 8778
+    sync_timeout: int = 30
+    sync_interval: int = 900  # scheduled sync pass interval, in seconds
+    sync_allow_http: bool = False  # HTTPS is required for public peers
+    sync_token_file: str = ".offgrid/sync-token"
+    sync_log: str = ".offgrid/sync.jsonl"
     command_policy: str = "ask"  # ask | auto | deny
     network: str = "allow"  # allow | deny
     offline: bool = False  # hard offline: no remote hosts, no network tools
@@ -127,6 +135,7 @@ class Config:
             f"effort={self.effort} memory={'on' if self.memory else 'off'} "
             f"scale={'on' if self.scale else 'off'} fleet={'on' if self.fleet else 'off'} "
             f"fleet-exec={'on' if self.fleet_exec else 'off'} "
+            f"sync={'on' if self.sync_peers else 'off'} "
             f"speech={'on' if self.speak else 'off'} "
             f"council={'on' if self.council else 'off'} "
             f"self-improve={'idle' if self.self_improve_idle else 'manual'} "
@@ -166,6 +175,8 @@ def _from_env() -> Dict[str, Any]:
         "OFFGRID_VERIFY": ("verify_command", str),
         "OFFGRID_TIMEOUT": ("request_timeout", int),
         "OFFGRID_VOICE": ("voice", str),
+        "OFFGRID_SYNC_PORT": ("sync_port", int),
+        "OFFGRID_SYNC_INTERVAL": ("sync_interval", int),
         "OFFGRID_IMPROVE_IDLE_MINUTES": ("self_improve_idle_minutes", float),
         "OFFGRID_IMPROVE_RETENTION_DAYS": ("self_improve_retention_days", float),
         "OFFGRID_IMPROVE_KEEP": ("self_improve_keep", int),
@@ -210,6 +221,12 @@ def _from_env() -> Dict[str, Any]:
             pass
     if env.get("OFFGRID_FLEET_TOKEN"):
         out["fleet_token"] = env["OFFGRID_FLEET_TOKEN"]
+    if env.get("OFFGRID_SYNC_PEERS"):
+        out["sync_peers"] = tuple(
+            part.strip() for part in env["OFFGRID_SYNC_PEERS"].split(",") if part.strip()
+        )
+    if env.get("OFFGRID_SYNC_ALLOW_HTTP", "").lower() in ("1", "true", "yes"):
+        out["sync_allow_http"] = True
     if env.get("OFFGRID_CONTEXT"):
         try:
             out["context_chars"] = int(env["OFFGRID_CONTEXT"])

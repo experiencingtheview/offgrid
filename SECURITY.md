@@ -19,9 +19,9 @@ welcome.
 OffGrid is designed around these boundaries:
 
 - **No telemetry and no accounts.** The code has no analytics, update check, or
-  central service. The only network connections are to the model endpoint you
-  configure, plus optional library/model downloads when you explicitly run a
-  builder.
+  central service. Network connections are opt-in: the model endpoint you
+  configure, optional library/model downloads when you explicitly run a builder,
+  fleet or public-council calls, and explicit `offgrid sync` peers.
 - **Loopback by default.** A non-local model endpoint is refused unless
   `--allow-remote` or the corresponding configuration is set. Public council
   members require `--council-public`.
@@ -31,9 +31,9 @@ OffGrid is designed around these boundaries:
   still refuses destructive commands and asks for approval on elevated or
   irreversible ones.
 - **Local state is private.** On POSIX, `.offgrid` is set to `0700` and session
-  logs, memory, security history, the continuity kit, and baselines are set to
-  `0600`. Windows uses the account's ACLs; the POSIX chmod calls are
-  best-effort there.
+  logs, memory, security history, the continuity kit, baselines, and the sync
+  token are set to `0600`. Windows uses the account's ACLs; the POSIX chmod
+  calls are best-effort there.
 - **Reviewable code.** The runtime uses only the Python standard library and
   does not hide network calls behind a dependency.
 
@@ -43,6 +43,13 @@ OffGrid is designed around these boundaries:
   token, but model prompts and answers are not encrypted in transit. Use it only
   on a trusted private LAN. Do not port-forward it or expose it to an untrusted
   network. The token proves possession; it does not provide confidentiality.
+- **Sync is explicit and quarantined.** `offgrid sync` shares accepted learning
+  notes only; incoming notes are pending and cannot reach a prompt until a local
+  human accepts them. Peers need a shared bearer token. Public peers require
+  HTTPS from the client, but the built-in server speaks HTTP: terminate TLS in a
+  reverse proxy before exposing it to the internet. Plain HTTP to a non-loopback
+  peer is refused unless `--allow-http` / `sync_allow_http` is set explicitly.
+  The token authenticates a peer; it does not encrypt traffic.
 - **A local model is not a security boundary.** Prompt injection in a file, a
   tool result, or a repository can influence the model. The deterministic
   command policy and path checks are the enforcement; model output is untrusted.
