@@ -135,6 +135,8 @@ git push origin --tags
   bundle labelled with a different version.
 - [ ] The workflow builds `offgrid-portable.zip`, checks it, and attaches it to
   the release; it does not publish to PyPI and does not upload a wheel or sdist.
-- [ ] Re-running the workflow with an existing tag replaces the asset in place.
-- [ ] Write the release notes from `CHANGELOG.md` if the workflow's default
-  notes are too thin for the change.
+- [ ] Re-running the workflow with an existing tag replaces the asset in place
+  and refreshes the notes on the release.
+- [ ] `CHANGELOG.md` has a `## [<version>] - <date>` section; the workflow
+  publishes it as the release notes and fails rather than publishing a release
+  with no notes.
