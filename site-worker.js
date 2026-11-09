@@ -1,5 +1,6 @@
 import page from "./index.html";
 import ciBadge from "./ci-badge/worker.js";
+import { zipResponse } from "./site-archive.js";
 
 const HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
@@ -29,6 +30,16 @@ export default {
 
     if (url.pathname === "/badge.svg" || url.pathname === "/status.json" || url.pathname === "/status") {
       return ciBadge.fetch(request, env);
+    }
+
+    if (url.pathname === "/download/offgrid-setup.zip") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed();
+      }
+      const download = zipResponse();
+      return request.method === "HEAD"
+        ? new Response(null, { headers: download.headers })
+        : download;
     }
 
     if (url.pathname === "/" || url.pathname === "/index.html") {
