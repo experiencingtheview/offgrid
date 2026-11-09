@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OffGrid — a coding team that never leaves your machine</title>
+  <meta name="description" content="OffGrid is a free, offline, multi-agent coding team. One local model becomes a planner, coder, reviewer and tester — no account, API key or telemetry.">
+  <meta name="theme-color" content="#0b0f0d">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="OffGrid — a coding team that never leaves your machine">
+  <meta property="og:description" content="Free, offline, multi-agent coding. One local model. A whole team. No cloud required.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="OffGrid home">
+        <svg class="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false">
+          <path d="M11 3H5a2 2 0 0 0-2 2v6M21 3h6a2 2 0 0 1 2 2v6M11 29H5a2 2 0 0 1-2-2v-6M21 29h6a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          <circle cx="16" cy="16" r="4.25" fill="currentColor"/>
+        </svg>
+        <span class="brand-name">OffGrid</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#why">Why OffGrid</a>
+        <a href="#team">The team</a>
+        <a href="#features">What you get</a>
+        <a href="#start">Quickstart</a>
+      </nav>
+      <a class="header-cta" href="https://github.com/experiencingtheview/offgrid">GitHub <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> Free · offline · local-first</p>
+          <h1 id="hero-title">A coding team that <em>never leaves</em> your machine.</h1>
+          <p class="lede">OffGrid turns one local language model into a planner, coder, reviewer and tester. No account. No API key. No telemetry. Just your code, your hardware, and a team that finishes the work.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/experiencingtheview/offgrid">Get OffGrid <span aria-hidden="true">→</span></a>
+            <a class="button button-ghost" href="#how">See how it works</a>
+          </div>
+          <ul class="hero-meta" aria-label="Project facts">
+            <li>Python 3.9+</li>
+            <li>Standard library only</li>
+            <li>MIT licensed</li>
+          </ul>
+        </div>
+
+        <figure class="terminal-wrap">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-lights" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span class="terminal-title">offgrid — local</span>
+              <span class="terminal-state">offline</span>
+            </div>
+            <pre class="terminal-body"><code><span class="t-prompt">$</span> <span class="t-command">offgrid run "add a /health endpoint to app.py"</span>
+<span class="t-dim">  OffGrid  offline coding team</span>
+<span class="t-dim">  model    qwen2.5-coder-7b @ 127.0.0.1</span>
+<span class="t-rule">  ─────────────────────────────────────</span>
+<span class="t-role">  planner</span>  splitting the task
+<span class="t-role">  coder</span>    editing app.py
+<span class="t-role">  reviewer</span> diff approved
+<span class="t-role">  tester</span>   running the test command
+<span class="t-ok">  ✓ 12 passed in 0.31s</span>
+<span class="t-rule">  ─────────────────────────────────────</span>
+<span class="t-ok">  Added /health returning {"status":"ok"}</span>
+<span class="t-ok">  ✓ 2 files changed · verified · 1m 04s</span></code></pre>
+          </div>
+          <figcaption>One prompt. A team of specialists. No round trip to the cloud.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <div class="trust-strip">
+      <div class="wrap">
+        <ul aria-label="OffGrid principles">
+          <li><span aria-hidden="true">✓</span> No account</li>
+          <li><span aria-hidden="true">✓</span> No API key</li>
+          <li><span aria-hidden="true">✓</span> No telemetry</li>
+          <li><span aria-hidden="true">✓</span> No cloud required</li>
+        </ul>
+      </div>
+    </div>
+
+    <section class="section" id="why" aria-labelledby="why-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker">01 / Why OffGrid</p>
+            <h2 id="why-title">A smaller brain.<br><em>Actually yours.</em></h2>
+          </div>
+          <div class="section-intro">
+            <p>Cloud coding agents are excellent. They also cost money, need a connection, and send your code to someone else's computer.</p>
+            <p>OffGrid is the opposite trade: less raw horsepower, but it runs on your machine, works on a train, and never sends your repository anywhere by default.</p>
+          </div>
+        </div>
+
+        <blockquote class="pullquote">
+          <p>“The interesting part is not the model. It is the orchestration.”</p>
+          <footer>One local model, split into a team that plans, acts and checks.</footer>
+        </blockquote>
+
+        <ol class="process" id="how">
+          <li class="process-step">
+            <span class="process-index" aria-hidden="true">01</span>
+            <h3>Plan the shape</h3>
+            <p>The planner breaks the task into 2–6 concrete steps, with files and dependencies, and assigns each one to a role.</p>
+          </li>
+          <li class="process-step">
+            <span class="process-index" aria-hidden="true">02</span>
+            <h3>Do the work</h3>
+            <p>The coder reads before writing, edits narrowly, and runs what it can to check itself. The tester covers the change.</p>
+          </li>
+          <li class="process-step">
+            <span class="process-index" aria-hidden="true">03</span>
+            <h3>Check the result</h3>
+            <p>The reviewer judges the diff. Your verification command runs. Failures go back to a coder until they pass or the run says so plainly.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" id="team" aria-labelledby="team-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker">02 / The team</p>
+            <h2 id="team-title">Six roles.<br><em>One local model.</em></h2>
+          </div>
+          <p class="section-intro">A 7B model asked to do everything wanders. The same model asked to implement one step, review a diff, or run a test does solid work. OffGrid does the splitting for it.</p>
+        </div>
+
+        <ul class="team-grid">
+          <li class="role">
+            <div class="role-top"><h3>Lead</h3><span class="role-index" aria-hidden="true">01</span></div>
+            <p>Coordinates the run and writes the closing report: what changed, how it was checked, and what remains.</p>
+          </li>
+          <li class="role">
+            <div class="role-top"><h3>Planner</h3><span class="role-index" aria-hidden="true">02</span></div>
+            <p>Turns one request into ordered steps, each with a role, the files involved and its dependencies.</p>
+          </li>
+          <li class="role">
+            <div class="role-top"><h3>Coder</h3><span class="role-index" aria-hidden="true">03</span></div>
+            <p>Full tool access. Reads first, edits narrowly, applies real patches and runs what it can to catch mistakes.</p>
+          </li>
+          <li class="role">
+            <div class="role-top"><h3>Tester</h3><span class="role-index" aria-hidden="true">04</span></div>
+            <p>Writes or starts tests, prefers your existing runner, and reports the exact command and output.</p>
+          </li>
+          <li class="role">
+            <div class="role-top"><h3>Reviewer</h3><span class="role-index" aria-hidden="true">05</span></div>
+            <p>Read-only judgement on correctness, completeness, safety and fit. It can approve or send the diff back.</p>
+          </li>
+          <li class="role">
+            <div class="role-top"><h3>Analyst</h3><span class="role-index" aria-hidden="true">06</span></div>
+            <p>Read-only investigation for the steps that need understanding before anyone edits a file.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker">03 / What you get</p>
+            <h2 id="features-title">Nothing leaves home<br><em>to get the work done.</em></h2>
+          </div>
+          <p class="section-intro">A local model, real files, real commands, durable memory and a conservative shell policy. The useful parts of a coding agent without the cloud dependency.</p>
+        </div>
+
+        <ul class="feature-grid">
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">01</span>
+            <h3>Offline by default</h3>
+            <p>Loopback-only model endpoints unless you explicitly allow remote. <code>--offline</code> blocks network tools, package installs and remote git.</p>
+          </li>
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">02</span>
+            <h3>No meter running</h3>
+            <p>Local weights, no account, no API key, no quota and no per-token bill. Your hardware is the only thing doing the work.</p>
+          </li>
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">03</span>
+            <h3>Real edits, real checks</h3>
+            <p>Reads files, searches the repo, applies targeted edits, inspects git state and runs commands in the workspace.</p>
+          </li>
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">04</span>
+            <h3>Memory with provenance</h3>
+            <p>Durable notes with confidence and source. Your verification command is learned once. Shared lessons stay pending until you accept them.</p>
+          </li>
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">05</span>
+            <h3>Built to carry</h3>
+            <p>Pure Python 3.9+ standard library. Build a USB bundle with a portable runtime and model, then work with no install and no internet.</p>
+          </li>
+          <li class="feature">
+            <span class="feature-index" aria-hidden="true">06</span>
+            <h3>On your side</h3>
+            <p>Workspace-confined writes, a gated destructive-command list and a fixed loyalty order carried by every agent prompt.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section section-start" id="start" aria-labelledby="start-title">
+      <div class="wrap start-grid">
+        <div class="start-copy">
+          <p class="kicker">04 / Quickstart</p>
+          <h2 id="start-title">Three commands to a working team.</h2>
+          <p class="section-intro">You need Python 3.9+ and a local OpenAI-compatible model server. Ollama is the shortest path. llama.cpp, LM Studio and vLLM work too.</p>
+          <p class="start-note">No model yet? <code>python3 -m offgrid demo</code> runs a scripted end-to-end session without one.</p>
+          <div class="start-actions">
+            <a class="text-link" href="https://github.com/experiencingtheview/offgrid#quickstart">Read the full quickstart <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/experiencingtheview/offgrid#a-voice-offline">Voice, USB builds and the rest <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+
+        <div class="start-steps">
+          <article class="start-step">
+            <div class="start-step-head"><span aria-hidden="true">01</span><h3>Get a local model</h3></div>
+            <pre class="code-block"><code>ollama pull qwen2.5-coder:7b
+ollama serve</code></pre>
+          </article>
+          <article class="start-step">
+            <div class="start-step-head"><span aria-hidden="true">02</span><h3>Clone OffGrid</h3></div>
+            <pre class="code-block"><code>git clone https://github.com/experiencingtheview/offgrid.git
+cd offgrid</code></pre>
+          </article>
+          <article class="start-step">
+            <div class="start-step-head"><span aria-hidden="true">03</span><h3>Check, then build</h3></div>
+            <pre class="code-block"><code>python3 -m offgrid doctor
+python3 -m offgrid chat
+<span class="c-comment"># or one-shot:</span>
+python3 -m offgrid run "fix the failing test"</code></pre>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing" aria-labelledby="closing-title">
+      <div class="wrap">
+        <p class="kicker">Local-first by construction</p>
+        <h2 id="closing-title">Your code. Your machine.<br><em>Your team.</em></h2>
+        <p class="closing-lede">Free to run. MIT licensed. No account, no cloud, no meter.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/experiencingtheview/offgrid">Take it offline <span aria-hidden="true">→</span></a>
+          <a class="button button-ghost" href="#start">Read the quickstart</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <a class="brand" href="/" aria-label="OffGrid home">
+            <svg class="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false">
+              <path d="M11 3H5a2 2 0 0 0-2 2v6M21 3h6a2 2 0 0 1 2 2v6M11 29H5a2 2 0 0 1-2-2v-6M21 29h6a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <circle cx="16" cy="16" r="4.25" fill="currentColor"/>
+            </svg>
+            <span class="brand-name">OffGrid</span>
+          </a>
+          <p>A free, offline, multi-agent coding team.<br>No account. No telemetry. No cloud required.</p>
+        </div>
+        <div class="footer-col">
+          <h2>Project</h2>
+          <a href="https://github.com/experiencingtheview/offgrid">Source</a>
+          <a href="https://github.com/experiencingtheview/offgrid/issues">Issues</a>
+          <a href="https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml">CI runs</a>
+        </div>
+        <div class="footer-col">
+          <h2>Read</h2>
+          <a href="https://github.com/experiencingtheview/offgrid#quickstart">Quickstart</a>
+          <a href="https://github.com/experiencingtheview/offgrid#safety">Safety</a>
+          <a href="https://github.com/experiencingtheview/offgrid/blob/main/LICENSE">MIT license</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 OffGrid contributors</span>
+        <span>This page loads no scripts or third-party assets.</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

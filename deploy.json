@@ -1,0 +1,22 @@
+{
+  "entrypoint": "site-worker.js",
+  "compatibilityDate": "2026-11-08",
+  "modules": [
+    {
+      "name": "site-worker.js",
+      "type": "esm",
+      "path": "./site-worker.js"
+    },
+    {
+      "name": "ci-badge/worker.js",
+      "type": "esm",
+      "path": "./ci-badge/worker.js"
+    },
+    {
+      "name": "index.html",
+      "type": "text",
+      "path": "./index.html"
+    }
+  ],
+  "assetsDirectory": "./public"
+}

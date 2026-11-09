@@ -190,7 +190,10 @@ export default {
       return json((await getStatus(env)) || { status: "unknown" });
     }
 
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/status")
+    ) {
       return new Response(page(await getStatus(env)), {
         headers: {
           "content-type": "text/html; charset=utf-8",

@@ -188,24 +188,207 @@ jobs:
             Pop-Location
           }
 
+  macos_desktop:
+    name: Desktop shortcut on macOS
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Create, inspect and remove a real .command
+        env:
+          DESKTOP_DIR: ${{ runner.temp }}/offgrid-desktop-shortcut
+          WORK_DIR: ${{ runner.temp }}/offgrid-shortcut-work
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shlex
+          import stat
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          desktop_dir = Path(os.environ["DESKTOP_DIR"])
+          work_dir = Path(os.environ["WORK_DIR"])
+          desktop_dir.mkdir(parents=True, exist_ok=True)
+          work_dir.mkdir(parents=True, exist_ok=True)
+
+          def run_json(*args):
+              completed = subprocess.run(
+                  ["offgrid", *args],
+                  cwd=work_dir,
+                  text=True,
+                  capture_output=True,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(
+                      "offgrid desktop command failed\n"
+                      f"stdout:\n{completed.stdout}\n"
+                      f"stderr:\n{completed.stderr}"
+                  )
+              return json.loads(completed.stdout)
+
+          installed = run_json(
+              "desktop", "install", "--desktop", str(desktop_dir), "--json"
+          )
+          shortcut = Path(installed["path"])
+          assert installed["ok"] is True
+          assert installed["platform"] == "macos"
+          assert shortcut == desktop_dir / "OffGrid.command"
+          assert installed["arguments"] == ["-m", "offgrid", "chat"]
+          assert Path(installed["target"]).resolve() == Path(sys.executable).resolve()
+          assert shortcut.is_file() and not shortcut.is_symlink()
+          assert shortcut.stat().st_mode & stat.S_IXUSR
+
+          text = shortcut.read_text(encoding="utf-8")
+          assert text.startswith("#!/bin/sh\n")
+          assert "OffGrid desktop shortcut" in text
+          assert f"cd {shlex.quote(str(Path.home()))} || exit 1" in text
+          assert (
+              f"exec {shlex.quote(installed['target'])} -m offgrid chat" in text
+          )
+          subprocess.run(["/bin/sh", "-n", str(shortcut)], check=True)
+          print(text)
+
+          found = run_json(
+              "desktop", "path", "--desktop", str(desktop_dir), "--json"
+          )
+          assert found["path"] == str(shortcut)
+          assert found["exists"] is True
+
+          removed = run_json(
+              "desktop", "remove", "--desktop", str(desktop_dir), "--json"
+          )
+          assert removed["removed"] is True
+          assert removed["path"] == str(shortcut)
+          assert not shortcut.exists()
+          print("macOS .command shortcut created, inspected and removed")
+          PY
+
+  linux_desktop:
+    name: Desktop shortcut on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Create, inspect and remove a real .desktop
+        env:
+          DESKTOP_DIR: ${{ runner.temp }}/offgrid-desktop-shortcut
+          WORK_DIR: ${{ runner.temp }}/offgrid-shortcut-work
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shlex
+          import stat
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          desktop_dir = Path(os.environ["DESKTOP_DIR"])
+          work_dir = Path(os.environ["WORK_DIR"])
+          desktop_dir.mkdir(parents=True, exist_ok=True)
+          work_dir.mkdir(parents=True, exist_ok=True)
+
+          def run_json(*args):
+              completed = subprocess.run(
+                  ["offgrid", *args],
+                  cwd=work_dir,
+                  text=True,
+                  capture_output=True,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(
+                      "offgrid desktop command failed\n"
+                      f"stdout:\n{completed.stdout}\n"
+                      f"stderr:\n{completed.stderr}"
+                  )
+              return json.loads(completed.stdout)
+
+          installed = run_json(
+              "desktop", "install", "--desktop", str(desktop_dir), "--json"
+          )
+          shortcut = Path(installed["path"])
+          assert installed["ok"] is True
+          assert installed["platform"] == "linux"
+          assert shortcut == desktop_dir / "OffGrid.desktop"
+          assert installed["arguments"] == ["-m", "offgrid", "chat"]
+          assert Path(installed["target"]).resolve() == Path(sys.executable).resolve()
+          assert shortcut.is_file() and not shortcut.is_symlink()
+          assert shortcut.stat().st_mode & stat.S_IXUSR
+
+          text = shortcut.read_text(encoding="utf-8")
+          assert text.startswith("# OffGrid desktop shortcut\n")
+          entry = {}
+          for line in text.splitlines():
+              if "=" in line and not line.startswith("#"):
+                  key, value = line.split("=", 1)
+                  entry[key] = value
+          assert entry["Type"] == "Application"
+          assert entry["Name"] == "OffGrid"
+          assert entry["Terminal"] == "true"
+          assert entry["Path"] == str(Path.home())
+          assert entry["X-OffGrid-Shortcut"] == "true"
+          assert shlex.split(entry["Exec"]) == [
+              installed["target"], "-m", "offgrid", "chat"
+          ]
+          print(text)
+
+          found = run_json(
+              "desktop", "path", "--desktop", str(desktop_dir), "--json"
+          )
+          assert found["path"] == str(shortcut)
+          assert found["exists"] is True
+
+          removed = run_json(
+              "desktop", "remove", "--desktop", str(desktop_dir), "--json"
+          )
+          assert removed["removed"] is True
+          assert removed["path"] == str(shortcut)
+          assert not shortcut.exists()
+          print("Linux .desktop shortcut created, inspected and removed")
+          PY
+
   badge:
     name: Publish public CI status
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, package, platform-smoke, windows_desktop]
+    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Publish the result
         continue-on-error: true
         env:
-          STATUS_URL: https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/status
-          CI_BADGE_TOKEN: ${{ secrets.CI_BADGE_TOKEN }}
+          STATUS_URL: https://site-936361bbc8d4492da54f8727d27c6b06.freebuff.page/status
+          PRODUCTION_CI_BADGE_TOKEN: ${{ secrets.PRODUCTION_CI_BADGE_TOKEN }}
           TEST_RESULT: ${{ needs.test.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
           PLATFORM_RESULT: ${{ needs.platform-smoke.result }}
           WINDOWS_DESKTOP_RESULT: ${{ needs.windows_desktop.result }}
+          MACOS_DESKTOP_RESULT: ${{ needs.macos_desktop.result }}
+          LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
         run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ]; then
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ]; then
             result=passing
           else
             result=failing
@@ -229,7 +412,7 @@ jobs:
               data=body,
               method="POST",
               headers={
-                  "Authorization": "Bearer " + os.environ["CI_BADGE_TOKEN"],
+                  "Authorization": "Bearer " + os.environ["PRODUCTION_CI_BADGE_TOKEN"],
                   "Content-Type": "application/json",
                   "User-Agent": "OffGridCI/1.0",
               },
