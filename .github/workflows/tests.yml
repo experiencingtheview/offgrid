@@ -35,6 +35,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run all tests
         run: python3 -m unittest discover -s tests -t .
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # The badge worker's write tests use the built-in node:sqlite module,
+          # which is unflagged from Node 22.13 and stable from 24. Pin it so the
+          # runner image's default Node cannot silently drop the coverage.
+          node-version: "24"
       - name: Run the badge worker tests
         run: node --test ci-badge/worker.test.js
 

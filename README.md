@@ -924,6 +924,9 @@ node --test ci-badge/worker.test.js          # badge worker freshness and publis
 python3 scripts/demo.py                      # full team run against a scripted model
 ```
 
+The badge worker tests need Node 24 or newer: the write-path tests run against
+an in-memory database through Node's built-in `node:sqlite`.
+
 The suite runs the entire pipeline — planner, coder, tester, reviewer, lead, archivist, verification and the fix loop — against the packaged scripted server (`offgrid/fake_llm.py`), including the no-native-tools fallback path, plus memory ranking, council privacy gates, library indexing and the honesty contract. No downloads, no keys, no GPU.
 
 More documentation: [CONTRIBUTING.md](CONTRIBUTING.md) for development and packaging checks, [SECURITY.md](SECURITY.md) for the threat model and reporting route, [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common failures, and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) for a release audit.
@@ -943,7 +946,7 @@ runs on every push, pull request, manual dispatch, and once a week on a
 schedule. It checks:
 
 - the full suite on Python 3.9 (Ubuntu 22.04) and Python 3.12;
-- the badge worker's tests — the staleness rule and the status publish endpoint — run with `node --test ci-badge/worker.test.js`;
+- the badge worker's tests — the staleness rule and the status publish endpoint — run on Node 24 with `node --test ci-badge/worker.test.js`;
 - a clean wheel install and the portable bundle it builds and runs;
 - installed-wheel smoke tests on Windows and macOS.
 
