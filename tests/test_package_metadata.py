@@ -57,3 +57,17 @@ class WheelMetadataTests(unittest.TestCase):
             (self.metadata.get("Description-Content-Type") or "").lower(),
         )
         self.assertGreater(len(description), 1000)
+
+    def test_no_deprecated_license_classifiers(self) -> None:
+        classifiers = self.metadata.get_all("Classifier") or []
+        deprecated = [
+            classifier
+            for classifier in classifiers
+            if classifier.startswith("License ::")
+        ]
+        self.assertEqual(
+            deprecated,
+            [],
+            "wheel contains deprecated license classifiers: "
+            + ", ".join(deprecated),
+        )
