@@ -105,6 +105,8 @@ The required contexts are:
 `Publish public CI status` is deliberately excluded: it is skipped on pull
 requests, so it cannot report a useful pull-request result. The ruleset also
 requires the branch to be up to date (`strict_required_status_checks_policy`).
+Administrators and deploy keys may bypass it, so the owner can still push a
+release commit directly while the checks gate pull request merges.
 
 Verify before tagging:
 

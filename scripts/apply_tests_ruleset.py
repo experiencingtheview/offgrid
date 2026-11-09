@@ -8,7 +8,9 @@ otherwise.
 
 The required contexts are the job names in .github/workflows/tests.yml. The
 "Publish public CI status" job is intentionally excluded because it is skipped
-on pull requests.
+on pull requests. Administrators and deploy keys are listed as bypass actors so
+the owner can still push a release commit directly; the checks gate pull
+request merges.
 
 Usage:
     GITHUB_TOKEN=... python3 scripts/apply_tests_ruleset.py
@@ -57,6 +59,10 @@ def ruleset_payload() -> Dict[str, Any]:
         "conditions": {
             "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
         },
+        "bypass_actors": [
+            {"actor_id": None, "actor_type": "DeployKey", "bypass_mode": "always"},
+            {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+        ],
         "rules": [
             {
                 "type": "required_status_checks",
