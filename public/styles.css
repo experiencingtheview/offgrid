@@ -308,6 +308,43 @@ h2 em {
   letter-spacing: 0.02em;
 }
 
+.release-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+  margin: 1.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.release-check-label {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.release-check code {
+  padding: 0.12rem 0.36rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--muted-bright);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.release-check .release-digest {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.release-check-sep {
+  color: var(--line-strong);
+}
+
 /* Terminal */
 
 .terminal-wrap {
