@@ -81,6 +81,7 @@ class ToolBox:
         memory=None,
         library=None,
         council=None,
+        fleet=None,
     ) -> None:
         self.ws = workspace
         self.config = config
@@ -89,6 +90,7 @@ class ToolBox:
         self.memory = memory
         self.library = library
         self.council = council
+        self.fleet = fleet
         self.council_recorder: Optional[Callable[[str, Any], None]] = None
         self.finished = False
         self.summary = ""
@@ -113,6 +115,8 @@ class ToolBox:
             "ask_council": self.ask_council,
             "finish": self.finish,
         }
+        if self.fleet is not None and self.config.fleet_exec:
+            self._impl["run_fleet_command"] = self.run_fleet_command
         self._schemas: Dict[str, Dict[str, Any]] = {
             "read_file": {
                 "description": "Read a text file. Returns numbered lines. Use offset/limit for big files.",
@@ -181,6 +185,35 @@ class ToolBox:
                         "command": {"type": "string"},
                         "timeout": {"type": "integer", "description": "seconds", "default": DEFAULT_TIMEOUT},
                         "cwd": {"type": "string", "description": "workspace-relative directory", "default": "."},
+                    },
+                    "required": ["command"],
+                },
+            },
+            "run_fleet_command": {
+                "description": (
+                    "Run a shell command on one or every registered fleet peer. "
+                    "Requires --fleet-exec here and --allow-exec on the peer; "
+                    "destructive commands are refused."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "peer": {
+                            "type": "string",
+                            "description": "registered peer name; empty means every responding peer",
+                            "default": "",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "workspace-relative directory on each peer",
+                            "default": ".",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "seconds",
+                            "default": DEFAULT_TIMEOUT,
+                        },
                     },
                     "required": ["command"],
                 },
@@ -439,6 +472,70 @@ class ToolBox:
             )
         text = f"$ {command}\nexit {proc.returncode}\n{body}"
         return ToolResult(proc.returncode == 0, text, {"exit_code": proc.returncode})
+
+    def run_fleet_command(
+        self, command: str, peer: str = "", cwd: str = ".", timeout: int = DEFAULT_TIMEOUT
+    ) -> ToolResult:
+        """Run a command on one peer, or on every peer that answers."""
+        if not self.config.fleet_exec:
+            return ToolResult(False, "remote fleet commands are disabled; pass --fleet-exec")
+        if self.fleet is None:
+            return ToolResult(False, "no fleet is configured")
+        command = (command or "").strip()
+        if not command:
+            return ToolResult(False, "empty command")
+        try:
+            seconds = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
+        except (TypeError, ValueError):
+            return ToolResult(False, "timeout must be an integer")
+        if not self.fleet.peers:
+            return ToolResult(False, "no fleet peers are registered")
+
+        selected = str(peer or "").strip()
+        results: List[Dict[str, Any]] = []
+        if selected:
+            match = next(
+                (
+                    item
+                    for item in self.fleet.peers
+                    if item.name.lower() == selected.lower()
+                ),
+                None,
+            )
+            if match is None:
+                names = ", ".join(item.name for item in self.fleet.peers)
+                return ToolResult(False, f"unknown peer '{selected}'. Registered: {names}")
+            try:
+                result = self.fleet.execute(match, command, cwd=cwd, timeout=seconds)
+            except Exception as exc:  # peer failures are reported to the agent
+                return ToolResult(False, f"{match.name}: {exc}")
+            result["peer"] = match.name
+            result["ok"] = True
+            results = [result]
+        else:
+            results = self.fleet.execute_all(command, cwd=cwd, timeout=seconds)
+            if not results:
+                return ToolResult(False, "no fleet peer answered")
+
+        lines: List[str] = []
+        failed = 0
+        for item in results:
+            name = str(item.get("peer") or "peer")
+            if item.get("error"):
+                failed += 1
+                lines.append(f"{name}: FAILED: {item['error']}")
+                continue
+            exit_code = item.get("exit_code")
+            output = str(item.get("output") or "(no output)")
+            lines.append(f"{name}: $ {command}\nexit {exit_code}\n{output}")
+            if exit_code != 0:
+                failed += 1
+        self.commands.append(f"fleet:{command}")
+        return ToolResult(
+            failed == 0,
+            "\n\n".join(lines),
+            {"peers": len(results), "failed": failed},
+        )
 
     def _authorize(self, command: str) -> tuple:
         command = (command or "").strip()

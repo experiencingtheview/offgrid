@@ -393,6 +393,8 @@ If you own a better computer, it can do the heavy lifting while the machine in f
 ```console
 # on the desktop with the GPU
 offgrid fleet serve
+# add --allow-exec to let trusted peers run commands there too
+offgrid fleet serve --allow-exec
 
 # on the laptop or phone, same network
 offgrid fleet scan          # shows peers; asks before registering; prompts for the token
@@ -401,6 +403,7 @@ offgrid fleet list --json         # same peer objects, last-known state
 offgrid fleet ping --json         # same peer objects, live reachability
 offgrid fleet ping
 offgrid run "port the parser to rust" --fleet
+offgrid run "build and test on every peer" --fleet --fleet-exec
 
 # manual alternative, or for a different token per machine:
 offgrid fleet add desk http://192.168.1.20:8776 --token <printed by serve>
@@ -412,16 +415,19 @@ offgrid fleet add desk http://192.168.1.20:8776 --token <printed by serve>
 compute: 7 on desk, 3 on local (1 peer attempt(s) failed, fell back to this machine)
 ```
 
+`--fleet-exec` exposes a separate `run_fleet_command` tool to the coder and tester. It runs a command in the workspace of every responding registered peer, or on one named peer, and reports each exit status. The feature is deliberately opt-in on both sides: the requesting run needs `--fleet-exec`, and the donating machine needs `fleet serve --allow-exec`. Destructive commands are refused, and commands cannot use a `cwd` outside the peer's workspace.
+
 Rules that are enforced, not just promised:
 
 - peers must be private LAN addresses (RFC1918, loopback, `.local`); a public IP is refused, so "peer" can never quietly mean "cloud";
-- every inference request needs the shared token, generated once per workspace at `.offgrid/fleet-token` with `0600` permissions and shown to you once;
+- every inference request and remote command needs the shared token, generated once per workspace at `.offgrid/fleet-token` with `0600` permissions and shown to you once;
 - `offgrid fleet scan` broadcasts on the LAN to find machines already serving, then offers each one for registration; nothing is saved without a confirmation (use `--yes` for a non-interactive run), and the shared token is prompted for privately if `--token` was not passed;
 - `offgrid fleet scan --json` prints one JSON object instead of the human listing: `counts` for discovered, registered, known and skipped peers, plus a `peers` array with each unique peer's name, URL, measured capabilities, `outcome` (`registered`, `already_registered`, `skipped`, or `error`), `reason`, `reachable` and latency. It never prompts: without `--yes` or `--token` the peer is reported as skipped with the reason, so a script can inspect first and register deliberately. Tokens are never included in the output. `offgrid fleet list --json` and `offgrid fleet ping --json` reuse the same peer object: list reports the last-known state without pinging, while ping checks live reachability and labels each peer `reachable` or `unreachable` with latency and any error;
 - a phone can donate too (Termux + llama.cpp), it just won't be fast;
 - the donating side serves HTTP on `8776` and answers LAN discovery on `8777`; on Windows allow both through the firewall once, and on Termux keep the screen awake;
 - fleet traffic is **cleartext HTTP with a bearer token**, not TLS. Use it only on a trusted private LAN, never forward the port from your router, and treat anyone who can observe the LAN or obtain the token as able to read prompts and answers; the token authenticates peers, it does not encrypt traffic;
-- no internet is involved, and the whole feature is off unless you pass `--fleet` or run `fleet serve`.
+- remote command execution is off unless the run passes `--fleet-exec` **and** the peer serves with `--allow-exec`. It runs in the peer's workspace, refuses destructive commands, and is still shell access: use it only on machines you own and a trusted LAN;
+- no internet is involved, and the whole feature is off unless you pass `--fleet` or `--fleet-exec`, or run `fleet serve`.
 
 Speed is explicitly not the goal: a slow answer from the good machine beats a fast wrong one from the small one, and the orchestrator will wait.
 

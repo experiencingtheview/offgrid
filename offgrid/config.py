@@ -54,6 +54,7 @@ class Config:
     fleet_token: str = ""
     fleet_file: str = ".offgrid/fleet.json"
     fleet_timeout: int = 180
+    fleet_exec: bool = False  # let agents run commands on registered peers
     command_policy: str = "ask"  # ask | auto | deny
     network: str = "allow"  # allow | deny
     offline: bool = False  # hard offline: no remote hosts, no network tools
@@ -125,6 +126,7 @@ class Config:
             f"commands={self.command_policy} network={self.network} "
             f"effort={self.effort} memory={'on' if self.memory else 'off'} "
             f"scale={'on' if self.scale else 'off'} fleet={'on' if self.fleet else 'off'} "
+            f"fleet-exec={'on' if self.fleet_exec else 'off'} "
             f"speech={'on' if self.speak else 'off'} "
             f"council={'on' if self.council else 'off'} "
             f"self-improve={'idle' if self.self_improve_idle else 'manual'} "
@@ -196,6 +198,9 @@ def _from_env() -> Dict[str, Any]:
         out["council_auto"] = False
     if env.get("OFFGRID_FLEET", "").lower() in ("1", "true", "yes"):
         out["fleet"] = True
+    if env.get("OFFGRID_FLEET_EXEC", "").lower() in ("1", "true", "yes"):
+        out["fleet"] = True
+        out["fleet_exec"] = True
     if env.get("OFFGRID_NO_SCALE", "").lower() in ("1", "true", "yes"):
         out["scale"] = False
     if env.get("OFFGRID_FLEET_PORT"):

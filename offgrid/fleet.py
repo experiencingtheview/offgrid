@@ -7,13 +7,16 @@ strongest available peer does the token generation. Nothing touches the
 internet - peers are LAN addresses only, and the whole feature is off unless
 you ask for it.
 
-Two halves:
+Three parts:
 
 - `Fleet` / `FleetProvider` - the requesting side. Keeps a registry of peers,
   ranks them by measured capability, routes each model call to the best one,
   and falls back to the local model when nobody answers.
 - `FleetServer` - the donating side. `offgrid fleet serve` exposes this
-  machine's model server over the LAN behind a shared token.
+  machine's model server over the LAN behind a shared token. With
+  `--allow-exec`, it can also run commands for peers that have the token.
+- Remote command execution is a separate opt-in on both sides. It keeps the
+  private-LAN and token checks; destructive commands are refused.
 
 Honesty rules that are enforced, not just documented:
 
@@ -30,6 +33,7 @@ import ipaddress
 import json
 import os
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -44,6 +48,15 @@ from .config import Config
 from .hardware import Capability, probe
 from .models import Completion, Message
 from .providers import LocalProvider, ProviderError
+from .tools import (
+    DESTRUCTIVE,
+    FORBIDDEN,
+    MAX_OUTPUT,
+    MAX_TIMEOUT,
+    NETWORK,
+    OFFLINE_SAFE,
+    _matches,
+)
 
 DEFAULT_PORT = 8776
 BEACON = b"OFFGRID?/1"
@@ -316,6 +329,43 @@ class Fleet:
         candidates = self.available(limit=1)
         return candidates[0] if candidates else None
 
+    # -- remote commands -------------------------------------------------
+    def execute(
+        self, peer: Peer, command: str, cwd: str = ".", timeout: int = 120
+    ) -> Dict[str, Any]:
+        """Run one command on a peer that was started with `--allow-exec`."""
+        if not (command or "").strip():
+            raise FleetError("empty command")
+        try:
+            seconds = max(1, min(int(timeout or 120), MAX_TIMEOUT))
+        except (TypeError, ValueError):
+            raise FleetError("timeout must be an integer") from None
+        result = _post(
+            f"{peer.url}/fleet/v1/exec",
+            {"command": command, "cwd": cwd or ".", "timeout": seconds},
+            token=peer.token,
+            timeout=seconds + 5,
+        )
+        if not isinstance(result, dict):
+            raise FleetError("peer returned an invalid command result")
+        return result
+
+    def execute_all(
+        self, command: str, cwd: str = ".", timeout: int = 120
+    ) -> List[Dict[str, Any]]:
+        """Run one command on every peer that answers right now."""
+        results: List[Dict[str, Any]] = []
+        for peer in self.available(limit=max(1, len(self.peers))):
+            try:
+                result = self.execute(peer, command, cwd=cwd, timeout=timeout)
+            except FleetError as exc:
+                results.append({"peer": peer.name, "ok": False, "error": str(exc)})
+                continue
+            result["peer"] = peer.name
+            result["ok"] = True
+            results.append(result)
+        return results
+
     # -- discovery -------------------------------------------------------
     def discover(self, hosts: Sequence[str] = ("255.255.255.255",), timeout: float = 1.5) -> List[Dict[str, Any]]:
         """Broadcast for machines running `offgrid fleet serve` on this LAN."""
@@ -515,7 +565,12 @@ class FleetProvider:
 # donating side
 # --------------------------------------------------------------------------
 class FleetServer:
-    """Expose this machine's model server to peers on the LAN, behind a token."""
+    """Expose this machine's model server to peers on the LAN, behind a token.
+
+    Command execution is a separate opt-in: `allow_exec=True` (CLI:
+    `offgrid fleet serve --allow-exec`) adds `/fleet/v1/exec`. It is still
+    token-authenticated and LAN-only, and destructive commands are refused.
+    """
 
     def __init__(
         self,
@@ -525,6 +580,7 @@ class FleetServer:
         port: Optional[int] = None,
         name: Optional[str] = None,
         capability: Optional[Capability] = None,
+        allow_exec: bool = False,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -532,6 +588,7 @@ class FleetServer:
         self.port = int(port if port is not None else config.fleet_port)
         self.name = name or socket.gethostname()
         self.capability = capability or probe(config.workspace or ".")
+        self.allow_exec = bool(allow_exec)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._beacon: Optional[threading.Thread] = None
@@ -539,6 +596,7 @@ class FleetServer:
         self._lock = threading.Lock()
         self._load = 0
         self.served = 0
+        self.executed = 0
 
     # -- info ------------------------------------------------------------
     def info(self) -> Dict[str, Any]:
@@ -559,6 +617,8 @@ class FleetServer:
             "accelerators": list(caps.accelerators),
             "load": self._load,
             "served": self.served,
+            "exec": self.allow_exec,
+            "executed": self.executed,
         }
 
     # -- request handling -------------------------------------------------
@@ -612,6 +672,94 @@ class FleetServer:
         self.served += 1
         return data
 
+    def handle_exec(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one command for an authenticated peer, if exec was enabled."""
+        if not self.allow_exec:
+            raise FleetError("remote command execution is disabled on this peer")
+        command = str(body.get("command") or "").strip()
+        if not command:
+            raise FleetError("command is required")
+        if len(command) > 8000:
+            raise FleetError("command is too long")
+        refusal = _matches(FORBIDDEN, command)
+        if refusal:
+            raise FleetError(f"refused: {refusal[1]} is never allowed")
+        refusal = _matches(DESTRUCTIVE, command)
+        if refusal:
+            raise FleetError(
+                f"refused: {refusal[1]} needs human approval and is not allowed on a fleet peer"
+            )
+        if self.config.network != "allow" and not any(
+            flag in command for flag in OFFLINE_SAFE
+        ):
+            refusal = _matches(NETWORK, command)
+            if refusal:
+                raise FleetError(
+                    f"refused: {refusal[1]} needs the network, and this peer is offline"
+                )
+
+        cwd = str(body.get("cwd") or ".").strip() or "."
+        if len(cwd) > 1000:
+            raise FleetError("cwd is too long")
+        root = Path(self.config.workspace or ".").expanduser().resolve()
+        try:
+            cwd_path = (root / cwd).resolve()
+            cwd_path.relative_to(root)
+        except (OSError, ValueError):
+            raise FleetError("cwd must stay inside this peer's workspace") from None
+        if not cwd_path.is_dir():
+            raise FleetError(f"cwd is not a directory: {cwd}")
+
+        try:
+            seconds = max(1, min(int(body.get("timeout") or 120), MAX_TIMEOUT))
+        except (TypeError, ValueError):
+            raise FleetError("timeout must be an integer") from None
+        env = dict(os.environ)
+        env.update(
+            {
+                "OFFGRID": "1",
+                "CI": "1",
+                "PYTHONUNBUFFERED": "1",
+                "PAGER": "cat",
+                "GIT_PAGER": "cat",
+                "GIT_TERMINAL_PROMPT": "0",
+                "TERM": "dumb",
+            }
+        )
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(cwd_path),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=seconds,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            raise FleetError(f"command timed out after {seconds}s") from None
+        except OSError as exc:
+            raise FleetError(f"could not run command: {exc}") from None
+
+        output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        output = output.strip() or "(no output)"
+        truncated = len(output) > MAX_OUTPUT
+        if truncated:
+            output = (
+                output[: MAX_OUTPUT // 2]
+                + f"\n... [{len(output) - MAX_OUTPUT} chars trimmed] ...\n"
+                + output[-MAX_OUTPUT // 2 :]
+            )
+        self.executed += 1
+        return {
+            "peer": self.name,
+            "cwd": "." if cwd_path == root else str(cwd_path.relative_to(root)),
+            "exit_code": proc.returncode,
+            "output": output,
+            "truncated": truncated,
+        }
+
     # -- lifecycle --------------------------------------------------------
     def start(self, host: str = "0.0.0.0") -> int:
         server = self
@@ -637,13 +785,18 @@ class FleetServer:
                     self._send(404, {"error": "not found"})
 
             def do_POST(self) -> None:
-                if self.path.rstrip("/") != "/fleet/v1/chat/completions":
+                path = self.path.rstrip("/")
+                if path not in ("/fleet/v1/chat/completions", "/fleet/v1/exec"):
                     self._send(404, {"error": "not found"})
                     return
                 if not server._authorised(self.headers.get("Authorization")):
                     self._send(401, {"error": "a fleet token is required"})
                     return
-                length = int(self.headers.get("Content-Length") or 0)
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    self._send(400, {"error": "bad body length"})
+                    return
                 if length <= 0 or length > MAX_BODY:
                     self._send(400, {"error": "bad body length"})
                     return
@@ -651,6 +804,21 @@ class FleetServer:
                     body = json.loads(self.rfile.read(length).decode("utf-8", errors="replace"))
                 except ValueError:
                     self._send(400, {"error": "invalid json"})
+                    return
+                if not isinstance(body, dict):
+                    self._send(400, {"error": "invalid json"})
+                    return
+                if path == "/fleet/v1/exec":
+                    if not server.allow_exec:
+                        self._send(
+                            403,
+                            {"error": "remote command execution is disabled on this peer"},
+                        )
+                        return
+                    try:
+                        self._send(200, server.handle_exec(body))
+                    except FleetError as exc:
+                        self._send(502, {"error": str(exc)})
                     return
                 if not isinstance(body.get("messages"), list):
                     self._send(400, {"error": "messages is required"})

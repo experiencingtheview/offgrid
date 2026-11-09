@@ -118,7 +118,12 @@ def posture(config: Config) -> List[str]:
             if config.allow_public_council
             else ("local members only" if config.council else "off")
         ),
-        f"fleet          {'on: model calls may run on LAN peers' if config.fleet else 'off'}",
+        f"fleet          "
+        + (
+            "on: model calls may run on LAN peers; remote commands enabled"
+            if config.fleet and config.fleet_exec
+            else ("on: model calls may run on LAN peers" if config.fleet else "off")
+        ),
         f"memory         pending lessons are never used before you accept them",
         f"security       reviews {'on' if config.security_review else 'off'}, logged to {config.security_history}",
     ]

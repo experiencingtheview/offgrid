@@ -453,6 +453,7 @@ class Team:
             memory=self.memory,
             library=self.library,
             council=self.council,
+            fleet=getattr(self.provider, "fleet", None),
         )
 
     # -- context ---------------------------------------------------------

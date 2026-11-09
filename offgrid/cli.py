@@ -116,6 +116,14 @@ def add_common(parser: argparse.ArgumentParser) -> None:
         help="also use other devices on this network running `offgrid fleet serve`",
     )
     parser.add_argument(
+        "--fleet-exec",
+        action="store_true",
+        help=(
+            "allow agents to run commands on registered peers; each peer must "
+            "serve with --allow-exec"
+        ),
+    )
+    parser.add_argument(
         "--no-scale",
         action="store_true",
         help="ignore measured hardware and use the effort profile exactly as written",
@@ -273,6 +281,11 @@ def build_parser() -> argparse.ArgumentParser:
     fleet.add_argument("--port", type=int, default=0, help="port to serve on (default 8776)")
     fleet.add_argument("--token", default="", help="shared token for add/scan/serve (serve defaults to a generated one)")
     fleet.add_argument("--yes", action="store_true", help="scan: register every discovered peer without prompting")
+    fleet.add_argument(
+        "--allow-exec",
+        action="store_true",
+        help="serve: allow token-authenticated peers to run shell commands here",
+    )
     fleet.add_argument(
         "--json",
         action="store_true",
@@ -608,6 +621,9 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
         out["library_dir"] = args.library_dir
     if getattr(args, "fleet", False):
         out["fleet"] = True
+    if getattr(args, "fleet_exec", False):
+        out["fleet"] = True
+        out["fleet_exec"] = True
     if getattr(args, "no_scale", False):
         out["scale"] = False
     if getattr(args, "no_review", False):
@@ -2050,7 +2066,14 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         if provider is None:
             return 2
         token = args.token or load_or_create_token(config)
-        server = FleetServer(config, provider, token=token, port=args.port or config.fleet_port)
+        allow_exec = bool(getattr(args, "allow_exec", False))
+        server = FleetServer(
+            config,
+            provider,
+            token=token,
+            port=args.port or config.fleet_port,
+            allow_exec=allow_exec,
+        )
         port = server.start()
         address = lan_address() or "this-host"
         print()
@@ -2059,6 +2082,11 @@ def cmd_fleet(args: argparse.Namespace) -> int:
             "fleet traffic is cleartext HTTP, not TLS: use it only on a trusted private "
             "LAN, never expose the port to the internet, and keep the bearer token private"
         )
+        if allow_exec:
+            ui.warn(
+                "remote command execution is enabled: peers with the token can run "
+                "non-destructive shell commands in this workspace"
+            )
         ui.info(f"  info:   http://{address}:{port}/fleet/info")
         ui.info(f"  add:    offgrid fleet add <name> http://{address}:{port} --token {token}")
         ui.info("  ctrl-c to stop")

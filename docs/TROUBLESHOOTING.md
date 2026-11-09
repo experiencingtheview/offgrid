@@ -144,6 +144,14 @@ private LAN, use the same shared token, and be reachable on port 8776 (with
 8777 for discovery). Fleet traffic is cleartext HTTP, not TLS: do not expose it
 to the internet.
 
+## Fleet command execution is refused
+
+Remote commands need `--fleet-exec` on the requesting run **and**
+`--allow-exec` on the peer's `fleet serve`. If either side is missing, the
+request is rejected rather than silently running locally. Commands also stay
+inside the peer's workspace, require the shared token, and refuse destructive
+operations such as recursive deletes, privilege escalation and publishing.
+
 ## `--speak` is silent
 
 OffGrid uses a voice that is already installed; it does not bundle a TTS

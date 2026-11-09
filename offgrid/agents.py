@@ -20,7 +20,7 @@ READ_TOOLS: Tuple[str, ...] = (
     "library_read",
 )
 EDIT_TOOLS: Tuple[str, ...] = ("write_file", "edit_file")
-RUN_TOOLS: Tuple[str, ...] = ("run_command",)
+RUN_TOOLS: Tuple[str, ...] = ("run_command", "run_fleet_command")
 KNOWLEDGE_TOOLS: Tuple[str, ...] = ("remember", "recall", "library_search", "library_read", "ask_council")
 
 ALL_TOOLS: Tuple[str, ...] = (
@@ -30,6 +30,7 @@ ALL_TOOLS: Tuple[str, ...] = (
     "write_file",
     "edit_file",
     "run_command",
+    "run_fleet_command",
     "git_status",
     "git_diff",
     "remember",

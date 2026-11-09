@@ -327,6 +327,19 @@ def _check_posture(config: Any) -> List[Finding]:
                 remediation="keep peer tokens private and the LAN trusted",
             )
         )
+    if getattr(config, "fleet_exec", False):
+        findings.append(
+            Finding(
+                severity="medium",
+                check="exposure",
+                message=(
+                    "fleet command execution is on: agents can run shell commands "
+                    "on LAN peers"
+                ),
+                path=".offgrid.json",
+                remediation="use only peers you own and serve with --allow-exec deliberately",
+            )
+        )
     return findings
 
 
