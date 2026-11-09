@@ -120,8 +120,21 @@ Verify before tagging:
 
 ## Tag and publish (maintainer only)
 
-- [ ] Create an annotated tag and GitHub release only after the checks above.
-- [ ] The release workflow uploads artifacts and `SHA256SUMS`; it does not
-  publish to PyPI.
-- [ ] Attach the wheel, sdist, portable zip, `.pyz`, and checksums.
-- [ ] Publish the release notes from `CHANGELOG.md`.
+Once `__version__` in `offgrid/__init__.py` is bumped and merged to `main`, the
+tag is the whole release step:
+
+```console
+git tag -a "v$(python3 -c 'import offgrid; print(offgrid.__version__)')" \
+  -m "OffGrid release"
+git push origin --tags
+```
+
+- [ ] Tag only after the checks above, and only from a commit that is on `main`.
+- [ ] The pushed tag triggers `.github/workflows/release.yml`. It first checks
+  that the tag matches `offgrid/__init__.py` and fails instead of publishing a
+  bundle labelled with a different version.
+- [ ] The workflow builds `offgrid-portable.zip`, checks it, and attaches it to
+  the release; it does not publish to PyPI and does not upload a wheel or sdist.
+- [ ] Re-running the workflow with an existing tag replaces the asset in place.
+- [ ] Write the release notes from `CHANGELOG.md` if the workflow's default
+  notes are too thin for the change.

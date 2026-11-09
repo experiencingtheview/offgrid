@@ -1,12 +1,27 @@
 """The release the website links to is built, checked and published by CI."""
 
+import importlib.util
 import re
 import unittest
+
 from pathlib import Path
+
+from offgrid import __version__
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+PYPROJECT = ROOT / "pyproject.toml"
+GUARD = ROOT / "scripts" / "check_release_version.py"
 ASSET = "offgrid-portable.zip"
+
+
+def _load_guard():
+    spec = importlib.util.spec_from_file_location("check_release_version", GUARD)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load {GUARD}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -37,6 +52,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         linked = re.findall(r'releases/latest/download/([^"]+)"', page)
         self.assertTrue(linked, "the download button should point at a release asset")
         self.assertEqual(set(linked), {ASSET})
+
+    def test_the_version_is_declared_once(self):
+        pyproject = PYPROJECT.read_text(encoding="utf-8")
+        self.assertIn('dynamic = ["version"]', pyproject)
+        self.assertIn('version = { attr = "offgrid.__version__" }', pyproject)
+        self.assertEqual(_load_guard().package_version(), __version__)
+
+    def test_a_tag_becomes_a_release_only_when_it_matches_the_version(self):
+        guard = _load_guard()
+        self.assertEqual(guard.problem(f"v{__version__}", __version__), "")
+        self.assertEqual(guard.problem(__version__, __version__), "")
+        message = guard.problem("v9.9.9", __version__)
+        self.assertIn("__version__", message)
+        self.assertEqual(guard.main(["v9.9.9"]), 1)
+
+    def test_the_workflow_checks_the_tag_before_it_builds(self):
+        self.assertIn('check_release_version.py "$TAG"', self.workflow)
+        self.assertLess(
+            self.workflow.index("check_release_version.py"),
+            self.workflow.index("offgrid.cli distribute"),
+        )
 
     def test_the_site_no_longer_builds_its_own_archive(self):
         # One download, one source of truth: the site links the release asset.
