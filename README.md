@@ -199,7 +199,7 @@ Both files are attached to the release. `SHA256SUMS` holds the zip's digest, so 
 $w=(Select-String -Path .\SHA256SUMS -Pattern offgrid-portable.zip).Line.Split()[0]; if((Get-FileHash .\offgrid-portable.zip -Algorithm SHA256).Hash -ne $w){throw 'SHA-256 mismatch'}
 ```
 
-It takes the expected digest out of `SHA256SUMS`, hashes the zip and throws on a mismatch, so a bad download stops instead of being compared by eye. `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` on its own just prints the hash. The workflow runs the same check on the archive it built, so the value it publishes is the value it verified. The download button reads that file when the page is served and shows the current digest beside it, with the check command, so the page cannot advertise a digest for a different build.
+It takes the expected digest out of `SHA256SUMS`, hashes the zip and throws on a mismatch, so a bad download stops instead of being compared by eye. `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` on its own just prints the hash. The workflow runs the same check on the archive it built, so the value it publishes is the value it verified. The download button reads that file when the page is served and shows the current digest beside it, with the check command, so the page cannot advertise a digest for a different build. A **Copy** button next to the digest puts it on the clipboard, using one small same-origin script; where the clipboard API is unavailable it selects the digest so the keyboard shortcut works instead.
 
 ### Downloadable portable app and device install
 

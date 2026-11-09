@@ -112,6 +112,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("sha256sum -c SHA256SUMS", page)
         self.assertIn("Get-FileHash", page)
         self.assertIn("throw 'SHA-256 mismatch'", page)
+
+    def test_the_digest_can_be_copied_without_selecting_it(self):
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "public" / "copy.js").read_text(encoding="utf-8")
+        worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
+        self.assertIn("data-copy-digest", page)
+        self.assertIn('src="/copy.js"', page)
+        self.assertIn("navigator.clipboard.writeText", script)
+        # Only that one same-origin file may run, and never inline code.
+        self.assertIn("script-src 'self'", worker)
+        self.assertNotIn("unsafe-inline", worker)
+        # A missing clipboard selects the digest instead of doing nothing.
+        self.assertIn("selectNodeContents", script)
+        # The button must not offer to copy the "see SHA256SUMS" fallback.
+        self.assertIn("[0-9a-f]{64}", script)
         self.assertIn("data-release-digest", worker)
         self.assertIn("releases/latest/download", worker)
         self.assertIn("/SHA256SUMS", worker)
