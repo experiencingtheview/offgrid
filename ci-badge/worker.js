@@ -2,9 +2,13 @@ const REPOSITORY = "experiencingtheview/offgrid";
 const WORKFLOW_URL =
   `https://github.com/${REPOSITORY}/actions/workflows/tests.yml`;
 const MAX_BODY_BYTES = 4096;
+// A week without a publish means the badge no longer vouches for main: the
+// weekly Tests run should have refreshed it by then.
+const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const COLORS = {
   passing: "#2ea44f",
   failing: "#cf222e",
+  stale: "#9a6700",
   unknown: "#6e7781",
 };
 
@@ -52,10 +56,23 @@ function labelFor(status) {
       : "no status";
 }
 
-function badgeSvg(row) {
+function isStale(row, now = Date.now()) {
+  if (!row || !row.updated_at) {
+    return false;
+  }
+  const updated = Date.parse(row.updated_at);
+  if (!Number.isFinite(updated)) {
+    // An unreadable timestamp cannot prove the result is current.
+    return true;
+  }
+  return now - updated > STALE_AFTER_MS;
+}
+
+function badgeSvg(row, now = Date.now()) {
   const status = row && row.status ? row.status : "unknown";
-  const label = labelFor(status);
-  const color = COLORS[status] || COLORS.unknown;
+  const stale = isStale(row, now);
+  const label = stale ? "stale" : labelFor(status);
+  const color = stale ? COLORS.stale : COLORS[status] || COLORS.unknown;
   const width = 148;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" role="img" aria-label="tests: ${label}">
   <title>tests: ${label}</title>
@@ -69,10 +86,14 @@ function badgeSvg(row) {
 </svg>`;
 }
 
-function page(row) {
+function page(row, now = Date.now()) {
   const status = row && row.status ? row.status : "unknown";
-  const label = labelFor(status);
-  const color = COLORS[status] || COLORS.unknown;
+  const stale = isStale(row, now);
+  const label = stale ? "stale" : labelFor(status);
+  const color = stale ? COLORS.stale : COLORS[status] || COLORS.unknown;
+  const staleNote = stale
+    ? `<p class="sub">No result has been published for more than a week, so this badge reports stale. The last recorded result was <strong>${labelFor(status)}</strong>.</p>`
+    : "";
   const sha = row && row.sha ? row.sha.slice(0, 12) : "not published yet";
   const run = row && row.run_id ? String(row.run_id) : "not available";
   const updated = row && row.updated_at
@@ -102,6 +123,7 @@ function page(row) {
     <h1>OffGrid CI</h1>
     <p class="sub">Public read-only status for the main branch.</p>
     <p class="status">${label}</p>
+    ${staleNote}
     <dl>
       <dt>commit</dt><dd>${sha}</dd>
       <dt>run</dt><dd>${run}</dd>
@@ -187,7 +209,11 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/status.json") {
-      return json((await getStatus(env)) || { status: "unknown" });
+      const row = await getStatus(env);
+      if (!row) {
+        return json({ status: "unknown", stale: false });
+      }
+      return json({ ...row, stale: isStale(row) });
     }
 
     if (

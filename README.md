@@ -953,7 +953,9 @@ python3 -m unittest discover -s tests -t .
 
 It needs no network, model server, API key or GPU. The badge is served by a
 public read-only status endpoint, and the workflow publishes the latest result
-for `main` there, so viewing it does not require a GitHub sign-in.
+for `main` there, so viewing it does not require a GitHub sign-in. Once that
+result is more than a week old the badge reports `stale` instead of the last
+result, so a badge that stopped updating does not keep looking green.
 
 ## Limits, honestly
 

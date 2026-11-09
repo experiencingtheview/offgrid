@@ -39,6 +39,9 @@ All notable changes to OffGrid are recorded here.
 - The Tests workflow also runs once a week on `main`, so a broken download or a
   transient outage in the secret-scan setup surfaces without waiting for the
   next push.
+- The CI badge reports `stale` once its published result is more than a week
+  old, instead of showing a result that no longer reflects `main`; the status
+  page says so too and `status.json` exposes the flag.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
