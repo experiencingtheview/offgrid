@@ -40,12 +40,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for launcher in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
             self.assertIn(f'"{launcher}"', self.workflow)
 
-    def test_the_publish_step_confirms_the_asset_is_attached(self):
+    def test_the_publish_step_confirms_what_it_attached(self):
         # `gh release view` has no `isLatest` field: asking for it fails the job
         # after the upload, so the check stays on fields that exist.
         self.assertNotIn("isLatest", self.workflow)
-        self.assertIn(f'select(.name == "{ASSET}")', self.workflow)
-        self.assertIn(f"has no {ASSET} attached", self.workflow)
+        self.assertIn(f"for asset in {ASSET} SHA256SUMS; do", self.workflow)
+        self.assertIn("has no $asset attached", self.workflow)
+
+    def test_the_checksum_file_is_written_and_checked(self):
+        self.assertIn(f"sha256sum {ASSET} > SHA256SUMS", self.workflow)
+        self.assertIn("sha256sum --check --strict SHA256SUMS", self.workflow)
+        # Both files travel together, so the checksum cannot describe another zip.
+        self.assertIn(f"dist/{ASSET} dist/SHA256SUMS", self.workflow)
+        self.assertLess(
+            self.workflow.index("> SHA256SUMS"),
+            self.workflow.index("gh release create"),
+        )
+
+    def test_the_readme_says_how_to_check_a_download(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("SHA256SUMS", readme)
+        self.assertIn("sha256sum -c SHA256SUMS", readme)
 
     def test_the_website_links_that_exact_asset(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
