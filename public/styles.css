@@ -340,7 +340,8 @@ h2 em {
   white-space: nowrap;
 }
 
-.release-check .release-digest {
+.release-check .release-digest,
+.release-check .release-check-long {
   white-space: normal;
   overflow-wrap: anywhere;
 }

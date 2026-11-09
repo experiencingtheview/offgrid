@@ -53,9 +53,10 @@
           <p class="release-check">
             <span class="release-check-label">Verify</span>
             <code>sha256sum -c SHA256SUMS</code>
-            <span class="release-check-sep" aria-hidden="true">·</span>
+          </p>
+          <p class="release-check">
             <span class="release-check-label">Windows</span>
-            <code>Get-FileHash .\offgrid-portable.zip -Algorithm SHA256</code>
+            <code class="release-check-long">$w=(Select-String -Path .\SHA256SUMS -Pattern offgrid-portable.zip).Line.Split()[0]; if((Get-FileHash .\offgrid-portable.zip -Algorithm SHA256).Hash -ne $w){throw 'SHA-256 mismatch'}</code>
           </p>
           <ul class="hero-meta" aria-label="Project facts">
             <li>Python 3.9+</li>

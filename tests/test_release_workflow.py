@@ -61,8 +61,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("SHA256SUMS", readme)
         self.assertIn("sha256sum -c SHA256SUMS", readme)
-        # Windows ships neither sha256sum nor shasum.
+        # Windows ships neither sha256sum nor shasum, so its check has to be a
+        # command that fails rather than a hash to compare by eye.
         self.assertIn("Get-FileHash", readme)
+        self.assertIn("Select-String", readme)
+        self.assertIn("throw 'SHA-256 mismatch'", readme)
 
     def test_the_website_links_that_exact_asset(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
@@ -108,6 +111,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("data-release-digest", page)
         self.assertIn("sha256sum -c SHA256SUMS", page)
         self.assertIn("Get-FileHash", page)
+        self.assertIn("throw 'SHA-256 mismatch'", page)
         self.assertIn("data-release-digest", worker)
         self.assertIn("releases/latest/download", worker)
         self.assertIn("/SHA256SUMS", worker)
