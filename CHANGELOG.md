@@ -69,6 +69,8 @@ All notable changes to OffGrid are recorded here.
   `sha256sum -c SHA256SUMS` before it is run. The website reads that file when
   it serves the page and shows the digest next to the download button with the
   command to check it, so the page and the published archive cannot disagree.
+  The page and the README also give PowerShell's `Get-FileHash`, which is how a
+  Windows download is checked, since Windows has no `sha256sum`.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is
