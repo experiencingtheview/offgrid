@@ -1,6 +1,8 @@
 # OffGrid
 
-[![Tests](https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/badge.svg)](https://site-051bdcbe593c4975ad751c52125bd97b.freebuff.page/)
+[![Tests](https://site-936361bbc8d4492da54f8727d27c6b06.freebuff.page/badge.svg)](https://site-936361bbc8d4492da54f8727d27c6b06.freebuff.page/status)
+
+**Project homepage:** [site-936361bbc8d4492da54f8727d27c6b06.freebuff.page](https://site-936361bbc8d4492da54f8727d27c6b06.freebuff.page)
 
 A **free, offline, multi-agent coding team** that runs on your own machine — from a laptop, or off a USB stick with no internet at all.
 

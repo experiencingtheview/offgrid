@@ -38,7 +38,7 @@ offgrid-launch = "offgrid.launch:main"
 offgrid-setup-usb = "offgrid.fullbundle:main"
 
 [project.urls]
-Homepage = "https://github.com/experiencingtheview/offgrid"
+Homepage = "https://site-936361bbc8d4492da54f8727d27c6b06.freebuff.page"
 Source = "https://github.com/experiencingtheview/offgrid"
 Issues = "https://github.com/experiencingtheview/offgrid/issues"
 
