@@ -55,10 +55,12 @@ All notable changes to OffGrid are recorded here.
   no second download. A launcher opens a terminal, runs `offgrid setup`, and
   starts the chat when a model server answers; nothing is installed system-wide
   and an old or missing Python is reported instead of failing later.
-- `.github/workflows/release.yml`: publishing a `v*` tag, or dispatching the
-  workflow with a tag, builds that archive with `offgrid distribute --build`,
-  verifies it with `unzip -t` and the presence of executable launchers, and
-  attaches it to the release.
+- `.github/workflows/release.yml`: pushing a `v*` tag builds that archive with
+  `offgrid distribute --build`, verifies it with `unzip -t` and the presence of
+  executable launchers, and attaches it to the release. The tag must match
+  `__version__` in `offgrid/__init__.py`, the only place the version is written:
+  `scripts/check_release_version.py` fails the run before it builds anything
+  when the two disagree, so a release cannot be labelled with a stale version.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is

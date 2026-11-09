@@ -191,7 +191,7 @@ If upstream has no prebuilt llama.cpp binary for your platform, the standalone b
 
 The project site's download button serves the latest release asset, `offgrid-portable.zip`. Unzip it and run `OffGrid.command` on macOS, `OffGrid.bat` on Windows, or `OffGrid.sh` on Linux. A terminal opens, `offgrid setup` reports the interpreter and the local model servers it found (or the two free ways to start one), and the chat starts once a server answers. The bundle carries the source and the single-file app, so setup needs no second download. Nothing is installed system-wide and no administrator rights are needed.
 
-The release is built by `.github/workflows/release.yml` from the repository's own builder, on a `v*` tag or by dispatching the workflow with a tag. Before publishing it runs `unzip -t` and checks that the launchers are present and executable, so the asset a visitor gets is the one the tests saw.
+The release is built by `.github/workflows/release.yml` from the repository's own builder whenever a `v*` tag is pushed. The version is written once, in `offgrid/__init__.py`; the workflow refuses a tag that disagrees with it, then runs `unzip -t` and checks that the launchers are present and executable, so the asset a visitor gets is the one the tests saw. Dispatching the workflow with an existing tag re-publishes that release, which is the only reason to run it by hand.
 
 ### Downloadable portable app and device install
 
