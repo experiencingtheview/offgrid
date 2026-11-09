@@ -70,4 +70,10 @@ jobs:
               --title "OffGrid $TAG" \
               --notes "Portable download. Unzip it, then run OffGrid.command on macOS, OffGrid.bat on Windows, or OffGrid.sh on Linux. A terminal opens, the setup check reports the interpreter and finds a local model server (or explains the two free ones), and the chat starts once one answers. Needs Python 3.9+ and a local model server; no account, no key, no telemetry."
           fi
-          gh release view "$TAG" --json tagName,isLatest,assets
+          gh release view "$TAG" --json tagName,assets,url
+          size=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name == "offgrid-portable.zip") | .size')
+          if [ -z "$size" ] || [ "$size" -le 0 ]; then
+            echo "release $TAG has no offgrid-portable.zip attached" >&2
+            exit 1
+          fi
+          echo "release $TAG serves offgrid-portable.zip ($size bytes)"

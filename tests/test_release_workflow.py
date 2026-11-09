@@ -25,6 +25,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for launcher in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
             self.assertIn(f'"{launcher}"', self.workflow)
 
+    def test_the_publish_step_confirms_the_asset_is_attached(self):
+        # `gh release view` has no `isLatest` field: asking for it fails the job
+        # after the upload, so the check stays on fields that exist.
+        self.assertNotIn("isLatest", self.workflow)
+        self.assertIn(f'select(.name == "{ASSET}")', self.workflow)
+        self.assertIn(f"has no {ASSET} attached", self.workflow)
+
     def test_the_website_links_that_exact_asset(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
         linked = re.findall(r'releases/latest/download/([^"]+)"', page)
