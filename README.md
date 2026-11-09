@@ -92,6 +92,18 @@ bundled model server, it starts that first. The same files are in `launch/` for
 scripts that already use that path. An installed copy can run `offgrid-launch`,
 which is the same as `offgrid chat`.
 
+### Check the setup in one step
+
+```console
+python3 -m offgrid setup          # or: ./OffGrid.sh setup
+```
+
+It reports the interpreter, platform and workspace, looks for a model server on
+localhost, and explains the two free ways to start one when nothing answers. In
+a terminal it also offers the desktop shortcut. `--no-input` prints the report
+without asking anything, `--json` is machine-readable, and it exits 1 until a
+server answers, so a script can wait on it.
+
 ### Put it on your desktop
 
 Create a native shortcut for the copy you are using:
