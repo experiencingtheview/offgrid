@@ -50,6 +50,10 @@ All notable changes to OffGrid are recorded here.
   against real in-memory SQLite through Node's built-in driver, so the upsert
   and its ordering guard are evaluated by SQL rather than by a JavaScript
   stand-in, and the workflow pins Node 24 for that module.
+- `offgrid setup`: a guided first run that checks the interpreter and platform,
+  finds a local model server or explains the two free ways to start one, and
+  offers the desktop shortcut. `--no-input` never prompts, `--json` is
+  machine-readable, and it exits 1 until a model server answers.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and

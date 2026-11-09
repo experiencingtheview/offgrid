@@ -33,6 +33,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid chat                                      interactive session
   offgrid demo                                      scripted demo, no model needed
   offgrid doctor                                    check the local model setup
+  offgrid setup                                     guided first run: model, checks, shortcut
   offgrid models                                    list models on the server
   offgrid agents                                    show the team roster
   offgrid memory [list|search|add|forget|review|reject|forgive|rejected] what it remembers
@@ -216,6 +217,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="machine-readable report on stdout",
     )
     add_common(doctor)
+
+    setup = subparsers.add_parser(
+        "setup", help="guided first run: check the machine, find a model, add a shortcut"
+    )
+    setup.add_argument("--json", action="store_true", help="machine-readable report on stdout")
+    setup.add_argument(
+        "--no-input",
+        action="store_true",
+        help="report only; never ask about the desktop shortcut",
+    )
+    setup.add_argument(
+        "--desktop",
+        default="",
+        metavar="DIR",
+        help="desktop folder for the shortcut the wizard offers",
+    )
+    add_common(setup)
 
     models = subparsers.add_parser("models", help="list models on the local server")
     add_common(models)
@@ -1435,6 +1453,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if strict_failed:
         ui.warn("strict mode: project lexicon warnings are a failure")
     return exit_code
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from .setup_wizard import run_wizard
+
+    config, _ui, workspace = prepare(args)
+    return run_wizard(
+        config,
+        workspace=workspace.root,
+        desktop_dir=(
+            Path(args.desktop).expanduser() if getattr(args, "desktop", "") else None
+        ),
+        as_json=bool(getattr(args, "json", False)),
+        interactive=False if getattr(args, "no_input", False) else None,
+    )
 
 
 def cmd_models(args: argparse.Namespace) -> int:
@@ -3502,6 +3535,7 @@ COMMANDS = {
     "maintain": cmd_maintain,
     "demo": cmd_demo,
     "doctor": cmd_doctor,
+    "setup": cmd_setup,
     "models": cmd_models,
     "agents": cmd_agents,
     "config": cmd_config,
