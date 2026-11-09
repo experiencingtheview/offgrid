@@ -1,0 +1,283 @@
+{
+  "metrics": {
+    "viewport": {
+      "innerWidth": 390,
+      "innerHeight": 844,
+      "clientWidth": 390,
+      "dpr": 1
+    },
+    "scroll": {
+      "width": 510,
+      "height": 7848,
+      "horizontalOverflow": true
+    },
+    "footerGrid": "358px",
+    "startGrid": "494.375px",
+    "wrapWidth": {
+      "x": 16,
+      "y": 5735,
+      "w": 358,
+      "h": 933,
+      "right": 374,
+      "bottom": 6668
+    },
+    "startCopy": {
+      "x": 16,
+      "y": 5735,
+      "w": 494,
+      "h": 364,
+      "right": 510,
+      "bottom": 6099
+    },
+    "startSteps": {
+      "x": 16,
+      "y": 6139,
+      "w": 494,
+      "h": 529,
+      "right": 510,
+      "bottom": 6668
+    },
+    "startStep": {
+      "x": 16,
+      "y": 6139,
+      "w": 494,
+      "h": 153,
+      "right": 510,
+      "bottom": 6291
+    },
+    "codeBlock": {
+      "x": 35,
+      "y": 6199,
+      "w": 457,
+      "h": 74,
+      "right": 492,
+      "bottom": 6273
+    },
+    "codeBlockOverflow": false,
+    "footer": {
+      "x": 0,
+      "y": 7264,
+      "w": 390,
+      "h": 584,
+      "right": 390,
+      "bottom": 7848
+    },
+    "overflow": [
+      {
+        "tag": "div",
+        "cls": "start-copy",
+        "box": {
+          "x": 16,
+          "y": 5735,
+          "w": 494,
+          "h": 364,
+          "right": 510,
+          "bottom": 6099
+        },
+        "text": "04 / QUICKSTART\n\nThree commands to a working team.\n\nYou"
+      },
+      {
+        "tag": "p",
+        "cls": "kicker",
+        "box": {
+          "x": 16,
+          "y": 5735,
+          "w": 494,
+          "h": 15,
+          "right": 510,
+          "bottom": 5750
+        },
+        "text": "04 / QUICKSTART"
+      },
+      {
+        "tag": "p",
+        "cls": "section-intro",
+        "box": {
+          "x": 16,
+          "y": 5853,
+          "w": 494,
+          "h": 83,
+          "right": 510,
+          "bottom": 5936
+        },
+        "text": "You need Python 3.9+ and a local OpenAI-compatible mode"
+      },
+      {
+        "tag": "p",
+        "cls": "start-note",
+        "box": {
+          "x": 16,
+          "y": 5960,
+          "w": 494,
+          "h": 68,
+          "right": 510,
+          "bottom": 6028
+        },
+        "text": "No model yet? python3 -m offgrid demo runs a scripted e"
+      },
+      {
+        "tag": "div",
+        "cls": "start-actions",
+        "box": {
+          "x": 16,
+          "y": 6052,
+          "w": 494,
+          "h": 47,
+          "right": 510,
+          "bottom": 6099
+        },
+        "text": "Read the full quickstart ↗\nVoice, USB builds and the re"
+      },
+      {
+        "tag": "div",
+        "cls": "start-steps",
+        "box": {
+          "x": 16,
+          "y": 6139,
+          "w": 494,
+          "h": 529,
+          "right": 510,
+          "bottom": 6668
+        },
+        "text": "01\nGet a local model\nollama pull qwen2.5-coder:7b\nollam"
+      },
+      {
+        "tag": "article",
+        "cls": "start-step",
+        "box": {
+          "x": 16,
+          "y": 6139,
+          "w": 494,
+          "h": 153,
+          "right": 510,
+          "bottom": 6291
+        },
+        "text": "01\nGet a local model\nollama pull qwen2.5-coder:7b\nollam"
+      },
+      {
+        "tag": "div",
+        "cls": "start-step-head",
+        "box": {
+          "x": 35,
+          "y": 6157,
+          "w": 457,
+          "h": 27,
+          "right": 492,
+          "bottom": 6185
+        },
+        "text": "01\nGet a local model"
+      },
+      {
+        "tag": "pre",
+        "cls": "code-block",
+        "box": {
+          "x": 35,
+          "y": 6199,
+          "w": 457,
+          "h": 74,
+          "right": 492,
+          "bottom": 6273
+        },
+        "text": "ollama pull qwen2.5-coder:7b\nollama serve"
+      },
+      {
+        "tag": "article",
+        "cls": "start-step",
+        "box": {
+          "x": 16,
+          "y": 6307,
+          "w": 494,
+          "h": 153,
+          "right": 510,
+          "bottom": 6460
+        },
+        "text": "02\nClone OffGrid\ngit clone https://github.com/experienc"
+      },
+      {
+        "tag": "div",
+        "cls": "start-step-head",
+        "box": {
+          "x": 35,
+          "y": 6326,
+          "w": 457,
+          "h": 27,
+          "right": 492,
+          "bottom": 6353
+        },
+        "text": "02\nClone OffGrid"
+      },
+      {
+        "tag": "pre",
+        "cls": "code-block",
+        "box": {
+          "x": 35,
+          "y": 6368,
+          "w": 457,
+          "h": 74,
+          "right": 492,
+          "bottom": 6441
+        },
+        "text": "git clone https://github.com/experiencingtheview/offgri"
+      },
+      {
+        "tag": "code",
+        "cls": "",
+        "box": {
+          "x": 53,
+          "y": 6388,
+          "w": 420,
+          "h": 32,
+          "right": 473,
+          "bottom": 6419
+        },
+        "text": "git clone https://github.com/experiencingtheview/offgri"
+      },
+      {
+        "tag": "article",
+        "cls": "start-step",
+        "box": {
+          "x": 16,
+          "y": 6476,
+          "w": 494,
+          "h": 192,
+          "right": 510,
+          "bottom": 6668
+        },
+        "text": "03\nCheck, then build\npython3 -m offgrid doctor\npython3 "
+      },
+      {
+        "tag": "div",
+        "cls": "start-step-head",
+        "box": {
+          "x": 35,
+          "y": 6495,
+          "w": 457,
+          "h": 27,
+          "right": 492,
+          "bottom": 6522
+        },
+        "text": "03\nCheck, then build"
+      },
+      {
+        "tag": "pre",
+        "cls": "code-block",
+        "box": {
+          "x": 35,
+          "y": 6536,
+          "w": 457,
+          "h": 114,
+          "right": 492,
+          "bottom": 6650
+        },
+        "text": "python3 -m offgrid doctor\npython3 -m offgrid chat\n# or "
+      }
+    ]
+  },
+  "consoleMessages": [
+    {
+      "type": "error",
+      "text": "Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092' violates the following Content Security Policy directive: \"default-src 'none'\". Note that 'script-src-elem' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+    }
+  ],
+  "pageErrors": []
+}
