@@ -2,8 +2,9 @@
 
 The ruleset cannot import GitHub Actions job names, so this test parses the
 small part of ``tests.yml`` that produces check names: job ids, ``name``
-values, matrix values and the badge job's pull-request condition. It uses only
-the standard library, like the rest of the project.
+values, matrix values, the badge job's pull-request condition, and the results
+its aggregate actually requires. It uses only the standard library, like the
+rest of the project.
 """
 
 import importlib.util
@@ -18,6 +19,11 @@ WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 RULESET_SCRIPT = ROOT / "scripts" / "apply_tests_ruleset.py"
 EXCLUDED_JOB_NAME = "Publish public CI status"
 MATRIX_EXPRESSION = re.compile(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}")
+RESULT_ENV = re.compile(
+    r"^\s*([A-Z][A-Z0-9_]*):\s*\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}\s*$",
+    re.MULTILINE,
+)
+SUCCESS_CHECK = re.compile(r'\[\s*"\$([A-Z][A-Z0-9_]*)"\s*=\s*"success"\s*\]')
 
 
 def _indent(line: str) -> int:
@@ -71,6 +77,56 @@ def _if_condition(lines: List[str]) -> str:
                 return " ".join(parts)
             return value
     return ""
+
+
+def _needs(job_id: str, lines: List[str]) -> List[str]:
+    """Return the job ids listed under ``needs:`` in one job block."""
+    for index, line in enumerate(lines):
+        if _indent(line) != 4 or not line.lstrip().startswith("needs:"):
+            continue
+        value = line.split(":", 1)[1].strip()
+        if value.startswith("["):
+            if not value.endswith("]"):
+                raise AssertionError(f"job {job_id} has an unterminated needs list")
+            return [
+                item.strip().strip("'\"")
+                for item in value[1:-1].split(",")
+                if item.strip()
+            ]
+        if value:
+            raise AssertionError(
+                f"job {job_id} has an unsupported needs value: {value}"
+            )
+        listed: List[str] = []
+        for follow in lines[index + 1 :]:
+            if not follow.strip():
+                continue
+            if _indent(follow) <= 4:
+                break
+            item = follow.strip()
+            if not item.startswith("- "):
+                break
+            listed.append(item[2:].strip().strip("'\""))
+        return listed
+    raise AssertionError(f"job {job_id} has no needs: entry")
+
+
+def _result_env(job_id: str, lines: List[str]) -> Dict[str, str]:
+    """Map every ``NAME: ${{ needs.job.result }}`` env var to its job id."""
+    mapping: Dict[str, str] = {}
+    for name, needed in RESULT_ENV.findall("\n".join(lines)):
+        if name in mapping:
+            raise AssertionError(f"job {job_id} sets {name} twice")
+        mapping[name] = needed
+    return mapping
+
+
+def _aggregated_results(job_id: str, lines: List[str]) -> List[str]:
+    """Return the env vars the aggregate requires to equal ``success``."""
+    found = SUCCESS_CHECK.findall("\n".join(lines))
+    if not found:
+        raise AssertionError(f"job {job_id} has no success checks")
+    return found
 
 
 def _unquote(value: str) -> str:
@@ -238,6 +294,74 @@ class RequiredCheckDriftTests(unittest.TestCase):
             "the Tests ruleset has drifted from tests.yml: "
             f"workflow checks missing from the ruleset: {missing}; "
             f"ruleset checks not produced by the workflow: {extra}",
+        )
+
+    def test_badge_aggregate_covers_every_needed_job(self):
+        blocks = _job_blocks(WORKFLOW.read_text(encoding="utf-8"))
+        badge_ids = [
+            job_id
+            for job_id, lines in blocks.items()
+            if _job_name(job_id, lines) == EXCLUDED_JOB_NAME
+        ]
+        self.assertEqual(
+            len(badge_ids),
+            1,
+            f"expected exactly one {EXCLUDED_JOB_NAME!r} job in {WORKFLOW.name}",
+        )
+        badge_id = badge_ids[0]
+        lines = blocks[badge_id]
+
+        needs = _needs(badge_id, lines)
+        self.assertGreaterEqual(len(needs), 2, "the badge job must depend on other jobs")
+        self.assertEqual(
+            len(needs), len(set(needs)), "the badge job lists a need more than once"
+        )
+        self.assertEqual(
+            sorted(needs),
+            sorted(job_id for job_id in blocks if job_id != badge_id),
+            "the badge job must depend on every job in the workflow, otherwise a "
+            "failure in a job it does not wait for still publishes a green badge",
+        )
+
+        env = _result_env(badge_id, lines)
+        by_job: Dict[str, str] = {}
+        for name, needed in env.items():
+            if needed in by_job:
+                raise AssertionError(
+                    f"the badge job reads {needed!r} through both "
+                    f"{by_job[needed]} and {name}"
+                )
+            by_job[needed] = name
+
+        self.assertEqual(
+            sorted(set(by_job) - set(needs)),
+            [],
+            "the badge job reads results it does not declare under needs",
+        )
+        self.assertEqual(
+            sorted(set(needs) - set(by_job)),
+            [],
+            "the badge job needs a job it never reads, so that job's result is ignored",
+        )
+
+        aggregated = _aggregated_results(badge_id, lines)
+        duplicates = sorted(
+            {name for name in aggregated if aggregated.count(name) > 1}
+        )
+        self.assertEqual(
+            duplicates, [], f"the badge aggregate checks {duplicates} more than once"
+        )
+        self.assertEqual(
+            sorted(set(aggregated) - set(env)),
+            [],
+            "the badge aggregate checks a result no needs entry sets",
+        )
+        unchecked = sorted(name for name in env if name not in set(aggregated))
+        self.assertEqual(
+            unchecked,
+            [],
+            "the badge aggregate does not require these results, so the matching "
+            f"job can fail while the badge stays green: {unchecked}",
         )
 
 
