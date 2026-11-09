@@ -47,7 +47,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build --outdir /tmp/offgrid-dist
-      - name: Check wheel homepage and long description
+      - name: Check wheel metadata (homepage, long description, license classifiers)
         run: |
           wheel="$(find /tmp/offgrid-dist -maxdepth 1 -name '*.whl' -print -quit)"
           test -n "$wheel"
