@@ -100,6 +100,7 @@ The required contexts are:
 - `Desktop shortcut on Windows`
 - `Desktop shortcut on macOS`
 - `Desktop shortcut on Linux`
+- `Windows launcher messages`
 
 `Publish public CI status` is deliberately excluded: it is skipped on pull
 requests, so it cannot report a useful pull-request result. The ruleset also
@@ -109,7 +110,7 @@ Verify before tagging:
 
 - [ ] Settings -> Rules -> Rulesets shows an active `Tests` ruleset targeting
   the default branch.
-- [ ] The ruleset lists the eight contexts above and no badge job.
+- [ ] The ruleset lists the nine contexts above and no badge job.
 - [ ] A pull request shows the Tests checks; a failing or missing check blocks
   merging, and the merge stays disabled until the branch is up to date.
 - [ ] If the GitHub plan still refuses rulesets, record that branch protection

@@ -369,10 +369,84 @@ jobs:
           print("Linux .desktop shortcut created, inspected and removed")
           PY
 
+  windows_launcher:
+    name: Windows launcher messages
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Explain a missing launch folder
+        shell: cmd
+        run: |
+          set "WORK=%RUNNER_TEMP%\offgrid-launcher-layout"
+          if exist "%WORK%" rmdir /s /q "%WORK%"
+          mkdir "%WORK%"
+          copy /y OffGrid.bat "%WORK%\OffGrid.bat" >nul
+          cd /d "%WORK%"
+          call OffGrid.bat < nul > output.txt 2>&1
+          if not errorlevel 1 (
+            echo Expected a non-zero exit when launch\offgrid.bat is missing.
+            type output.txt
+            exit /b 1
+          )
+          findstr /C:"launch\offgrid.bat is missing" output.txt
+          findstr /C:"Extract the whole zip" output.txt
+          type output.txt
+      - name: Explain a missing Python interpreter
+        shell: cmd
+        run: |
+          set "WORK=%RUNNER_TEMP%\offgrid-launcher-python"
+          if exist "%WORK%" rmdir /s /q "%WORK%"
+          mkdir "%WORK%\launch"
+          copy /y OffGrid.bat "%WORK%\OffGrid.bat" >nul
+          copy /y launch\offgrid.bat "%WORK%\launch\offgrid.bat" >nul
+          > "%WORK%\py.cmd" echo @exit /b 1
+          > "%WORK%\python.cmd" echo @exit /b 1
+          > "%WORK%\python3.cmd" echo @exit /b 1
+          set "PATH=%WORK%;%SystemRoot%\System32;%SystemRoot%"
+          cd /d "%WORK%"
+          call OffGrid.bat < nul > output.txt 2>&1
+          if not errorlevel 1 (
+            echo Expected a non-zero exit when no Python candidate runs.
+            type output.txt
+            exit /b 1
+          )
+          findstr /C:"no working Python 3.9+ was found" output.txt
+          findstr /C:"Microsoft Store" output.txt
+          findstr /C:"Smart App Control" output.txt
+          type output.txt
+      - name: Start the app with a real interpreter
+        shell: cmd
+        run: |
+          call OffGrid.bat --version > output.txt 2>&1
+          if errorlevel 1 (
+            echo The launcher could not start the app.
+            type output.txt
+            exit /b 1
+          )
+          findstr /I /C:"offgrid" output.txt >nul
+          if errorlevel 1 (
+            echo The launcher did not reach the app.
+            type output.txt
+            exit /b 1
+          )
+          findstr /C:"no working Python" output.txt >nul
+          if not errorlevel 1 (
+            echo The launcher reported a missing Python but one is installed.
+            type output.txt
+            exit /b 1
+          )
+          type output.txt
+
   badge:
     name: Publish public CI status
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop]
+    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop, windows_launcher]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -387,8 +461,9 @@ jobs:
           WINDOWS_DESKTOP_RESULT: ${{ needs.windows_desktop.result }}
           MACOS_DESKTOP_RESULT: ${{ needs.macos_desktop.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
+          WINDOWS_LAUNCHER_RESULT: ${{ needs.windows_launcher.result }}
         run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ]; then
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ] && [ "$WINDOWS_LAUNCHER_RESULT" = "success" ]; then
             result=passing
           else
             result=failing

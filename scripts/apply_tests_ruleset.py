@@ -42,6 +42,7 @@ REQUIRED_CHECKS = (
     "Desktop shortcut on Windows",
     "Desktop shortcut on macOS",
     "Desktop shortcut on Linux",
+    "Windows launcher messages",
 )
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GITHUB_HOSTS = {"github.com", "ssh.github.com"}
