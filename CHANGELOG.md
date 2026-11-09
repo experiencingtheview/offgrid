@@ -61,6 +61,10 @@ All notable changes to OffGrid are recorded here.
   `__version__` in `offgrid/__init__.py`, the only place the version is written:
   `scripts/check_release_version.py` fails the run before it builds anything
   when the two disagree, so a release cannot be labelled with a stale version.
+  The release notes are that version's `CHANGELOG.md` section, read by
+  `scripts/changelog_notes.py`, so the release page and the changelog say the
+  same thing and a version with no section is refused instead of published
+  with empty notes.
 - `offgrid setup`: a guided first run that checks the interpreter and platform,
   finds a local model server or explains the two free ways to start one, and
   offers the desktop shortcut. `--no-input` never prompts, `--json` is
