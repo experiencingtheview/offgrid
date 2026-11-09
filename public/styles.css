@@ -319,6 +319,10 @@ h2 em {
   line-height: 1.5;
 }
 
+.release-check + .release-check {
+  margin-top: 0.45rem;
+}
+
 .release-check-label {
   font-family: var(--mono);
   font-size: 0.62rem;

@@ -49,9 +49,13 @@
           <p class="release-check">
             <span class="release-check-label">SHA-256</span>
             <code class="release-digest" data-release-digest>see SHA256SUMS</code>
-            <span class="release-check-sep" aria-hidden="true">·</span>
+          </p>
+          <p class="release-check">
             <span class="release-check-label">Verify</span>
             <code>sha256sum -c SHA256SUMS</code>
+            <span class="release-check-sep" aria-hidden="true">·</span>
+            <span class="release-check-label">Windows</span>
+            <code>Get-FileHash .\offgrid-portable.zip -Algorithm SHA256</code>
           </p>
           <ul class="hero-meta" aria-label="Project facts">
             <li>Python 3.9+</li>
