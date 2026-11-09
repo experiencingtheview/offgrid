@@ -2,8 +2,8 @@
 
 The ruleset cannot import GitHub Actions job names, so this test parses the
 small part of ``tests.yml`` that produces check names: job ids, ``name``
-values, matrix values, the badge job's pull-request condition, and the results
-its aggregate actually requires. It uses only the standard library, like the
+values, matrix values, the conditions the badge job publishes under, and the
+results its aggregate actually requires. It uses only the standard library, like the
 rest of the project.
 """
 
@@ -24,6 +24,7 @@ RESULT_ENV = re.compile(
     re.MULTILINE,
 )
 SUCCESS_CHECK = re.compile(r'\[\s*"\$([A-Z][A-Z0-9_]*)"\s*=\s*"success"\s*\]')
+MAIN_REF_CONJUNCT = "github.ref == 'refs/heads/main'"
 
 
 def _indent(line: str) -> int:
@@ -77,6 +78,18 @@ def _if_condition(lines: List[str]) -> str:
                 return " ".join(parts)
             return value
     return ""
+
+
+def _conjuncts(condition: str) -> List[str]:
+    """Split a flat ``&&`` condition into its normalized terms."""
+    terms = []
+    for part in condition.replace('"', "'").split("&&"):
+        term = part.strip()
+        while term.startswith("(") and term.endswith(")"):
+            term = term[1:-1].strip()
+        if term:
+            terms.append(term)
+    return terms
 
 
 def _needs(job_id: str, lines: List[str]) -> List[str]:
@@ -261,10 +274,31 @@ class RequiredCheckDriftTests(unittest.TestCase):
             f"expected exactly one {EXCLUDED_JOB_NAME!r} job in {WORKFLOW.name}",
         )
         badge_id = badge_ids[0]
+        condition = _if_condition(blocks[badge_id])
         self.assertIn(
             "github.event_name != 'pull_request'",
-            _if_condition(blocks[badge_id]),
+            condition,
             "the badge job must stay skipped on pull requests",
+        )
+
+        conjuncts = _conjuncts(condition)
+        self.assertIn(
+            MAIN_REF_CONJUNCT,
+            conjuncts,
+            "the badge job must publish only for main, otherwise a branch's "
+            "result is published as main's status",
+        )
+        ref_terms = sorted(
+            term
+            for term in conjuncts
+            if "github.ref" in term or "github.head_ref" in term
+        )
+        self.assertEqual(
+            ref_terms,
+            [MAIN_REF_CONJUNCT],
+            "the badge job's ref condition must be exactly "
+            f"{MAIN_REF_CONJUNCT!r}, with no extra branch, negation or "
+            "prefix matching",
         )
 
         workflow_checks: List[str] = []
