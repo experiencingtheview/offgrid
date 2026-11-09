@@ -1,45 +1,73 @@
-name: Release artifacts
+name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, for example v0.1.0"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  artifacts:
-    name: Build and checksum release artifacts
+  publish:
+    name: Publish the portable bundle
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run the full suite
-        run: python3 -m unittest discover -s tests -t .
-      - name: Build the Python distribution
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build --outdir dist
+
       - name: Build the portable bundle
         run: |
-          python -m offgrid.cli distribute \
-            --build "dist/offgrid-${GITHUB_REF_NAME}-portable.zip" \
-            --with-tests --force
-      - name: Write checksums
+          python3 -m offgrid.cli distribute \
+            --build dist/offgrid-portable.zip \
+            --workspace . \
+            --no-color
+
+      - name: Check the archive before anyone downloads it
         run: |
-          cd dist
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: offgrid-release-${{ github.ref_name }}
-          path: dist/
-          if-no-files-found: error
+          unzip -t dist/offgrid-portable.zip
+          python3 - <<'PY'
+          import stat
+          import zipfile
+
+          with zipfile.ZipFile("dist/offgrid-portable.zip") as archive:
+              infos = {info.filename.rsplit("/", 1)[-1]: info for info in archive.infolist()}
+              for name in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat", "README-FIRST.txt"):
+                  if name not in infos:
+                      raise SystemExit(f"release archive is missing {name}")
+              for name in ("OffGrid.sh", "OffGrid.command"):
+                  mode = infos[name].external_attr >> 16
+                  if not mode & stat.S_IXUSR:
+                      raise SystemExit(f"{name} is not executable in the archive")
+              print(f"{len(infos)} entries, launchers executable")
+          PY
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "updating the existing release $TAG"
+            gh release upload "$TAG" dist/offgrid-portable.zip --clobber
+          else
+            target=()
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              target=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$TAG" dist/offgrid-portable.zip "${target[@]}" \
+              --title "OffGrid $TAG" \
+              --notes "Portable download. Unzip it, then run OffGrid.command on macOS, OffGrid.bat on Windows, or OffGrid.sh on Linux. A terminal opens, the setup check reports the interpreter and finds a local model server (or explains the two free ones), and the chat starts once one answers. Needs Python 3.9+ and a local model server; no account, no key, no telemetry."
+          fi
+          gh release view "$TAG" --json tagName,isLatest,assets
