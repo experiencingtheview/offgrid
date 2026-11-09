@@ -938,7 +938,8 @@ Add an `AgentSpec` to `ROSTER` in `offgrid/agents.py` with a role prompt in `off
 ## CI
 
 The [Tests workflow](https://github.com/experiencingtheview/offgrid/actions/workflows/tests.yml)
-runs on every push, pull request, and manual dispatch. It checks:
+runs on every push, pull request, manual dispatch, and once a week on a
+schedule. It checks:
 
 - the full suite on Python 3.9 (Ubuntu 22.04) and Python 3.12;
 - a clean wheel install and the portable bundle it builds and runs;

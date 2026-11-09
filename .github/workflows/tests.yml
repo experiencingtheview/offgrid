@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # A weekly run on the default branch keeps the pipeline honest when nothing
+  # is pushed: it exercises the secret-scan download and the published badge.
+  schedule:
+    - cron: "23 4 * * 1"
 
 permissions:
   contents: read
