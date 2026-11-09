@@ -13,11 +13,6 @@
       "path": "./ci-badge/worker.js"
     },
     {
-      "name": "site-archive.js",
-      "type": "esm",
-      "path": "./site-archive.js"
-    },
-    {
       "name": "index.html",
       "type": "text",
       "path": "./index.html"

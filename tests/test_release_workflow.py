@@ -1,0 +1,44 @@
+"""The release the website links to is built, checked and published by CI."""
+
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+ASSET = "offgrid-portable.zip"
+
+
+class ReleaseWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_asset_is_built_by_the_repository_builder(self):
+        self.assertIn("offgrid.cli distribute", self.workflow)
+        self.assertIn(f"--build dist/{ASSET}", self.workflow)
+        self.assertIn("contents: write", self.workflow)
+
+    def test_the_asset_is_checked_and_attached(self):
+        self.assertIn("unzip -t", self.workflow)
+        self.assertIn("gh release create", self.workflow)
+        self.assertIn("gh release upload", self.workflow)
+        for launcher in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
+            self.assertIn(f'"{launcher}"', self.workflow)
+
+    def test_the_website_links_that_exact_asset(self):
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        linked = re.findall(r'releases/latest/download/([^"]+)"', page)
+        self.assertTrue(linked, "the download button should point at a release asset")
+        self.assertEqual(set(linked), {ASSET})
+
+    def test_the_site_no_longer_builds_its_own_archive(self):
+        # One download, one source of truth: the site links the release asset.
+        worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
+        deploy = (ROOT / "deploy.json").read_text(encoding="utf-8")
+        self.assertNotIn("site-archive", worker + deploy)
+        self.assertNotIn("/download/", worker)
+        self.assertFalse((ROOT / "site-archive.js").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
