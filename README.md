@@ -920,7 +920,7 @@ Every stage is tolerant: a planner that returns prose, a reviewer that returns g
 
 ```console
 python3 -m unittest discover -s tests -t .   # full suite, no network, no model
-node --test ci-badge/worker.test.js          # badge worker freshness tests
+node --test ci-badge/worker.test.js          # badge worker freshness and publish tests
 python3 scripts/demo.py                      # full team run against a scripted model
 ```
 
@@ -943,7 +943,7 @@ runs on every push, pull request, manual dispatch, and once a week on a
 schedule. It checks:
 
 - the full suite on Python 3.9 (Ubuntu 22.04) and Python 3.12;
-- the badge worker's freshness tests, run with `node --test ci-badge/worker.test.js`;
+- the badge worker's tests — the staleness rule and the status publish endpoint — run with `node --test ci-badge/worker.test.js`;
 - a clean wheel install and the portable bundle it builds and runs;
 - installed-wheel smoke tests on Windows and macOS.
 

@@ -44,7 +44,9 @@ All notable changes to OffGrid are recorded here.
   page says so too and `status.json` exposes the flag. `ci-badge/worker.test.js`
   covers that rule through the worker's own `fetch` handler, and the Tests
   workflow runs it with Node's built-in runner so a regression that kept a
-  week-old result looking green fails CI.
+  week-old result looking green fails CI. The same file covers the publish
+  endpoint: a missing or wrong token is refused, a malformed body never reaches
+  D1, and an older run cannot overwrite a newer result.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
