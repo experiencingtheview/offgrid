@@ -47,6 +47,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build --outdir /tmp/offgrid-dist
+      - name: Check wheel homepage and long description
+        run: |
+          wheel="$(find /tmp/offgrid-dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          OFFGRID_WHEEL="$wheel" python -m unittest tests.test_package_metadata -v
       - name: Install the wheel in a clean environment
         run: |
           python -m venv /tmp/offgrid-venv
