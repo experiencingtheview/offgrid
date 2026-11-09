@@ -1,0 +1,5 @@
+{
+  "name": "offgrid-ci-badge",
+  "private": true,
+  "type": "module"
+}

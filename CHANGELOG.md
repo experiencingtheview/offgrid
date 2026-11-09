@@ -41,7 +41,10 @@ All notable changes to OffGrid are recorded here.
   next push.
 - The CI badge reports `stale` once its published result is more than a week
   old, instead of showing a result that no longer reflects `main`; the status
-  page says so too and `status.json` exposes the flag.
+  page says so too and `status.json` exposes the flag. `ci-badge/worker.test.js`
+  covers that rule through the worker's own `fetch` handler, and the Tests
+  workflow runs it with Node's built-in runner so a regression that kept a
+  week-old result looking green fails CI.
 - Desktop shortcut installers: `offgrid desktop install` writes a native
   `OffGrid.desktop` entry on Linux, a double-clickable `OffGrid.command` on
   macOS, or an `OffGrid.lnk` on Windows. `offgrid desktop path` and
