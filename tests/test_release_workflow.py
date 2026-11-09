@@ -90,12 +90,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
 
     def test_the_site_no_longer_builds_its_own_archive(self):
-        # One download, one source of truth: the site links the release asset.
+        # One download, one source of truth: the site links the release asset
+        # and only reads its checksum, never serves an archive of its own.
         worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
         deploy = (ROOT / "deploy.json").read_text(encoding="utf-8")
         self.assertNotIn("site-archive", worker + deploy)
-        self.assertNotIn("/download/", worker)
+        self.assertNotIn(f"/download/{ASSET}", worker)
         self.assertFalse((ROOT / "site-archive.js").exists())
+
+    def test_the_website_shows_the_digest_of_the_file_it_serves(self):
+        # Read from the release at request time, so the page cannot show a
+        # digest that belongs to a different build than the download button.
+        page = (ROOT / "index.html").read_text(encoding="utf-8")
+        worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
+        self.assertIn("data-release-digest", page)
+        self.assertIn("sha256sum -c SHA256SUMS", page)
+        self.assertIn("data-release-digest", worker)
+        self.assertIn("releases/latest/download", worker)
+        self.assertIn("/SHA256SUMS", worker)
+        self.assertIn("AbortSignal.timeout", worker)
+        # The injection has to happen before the page is returned.
+        self.assertLess(worker.index("releaseDigest()"), worker.index("withDigest(page"))
 
 
 if __name__ == "__main__":
