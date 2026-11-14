@@ -21,18 +21,19 @@ if exist "%ROOT%\runtime\python\python.exe" (
 )
 rem The Microsoft Store alias answers "where python" but is not an interpreter,
 rem so every candidate is executed once instead of trusted.
-py -3 -c "import sys" >nul 2>&1
+rem call is harmless for a real python.exe and lets a test shim (.bat) return.
+call py -3 -c "import sys" >nul 2>&1
 if not errorlevel 1 (
   set "PY=py"
   set "PYARGS=-3"
   goto check_python
 )
-python -c "import sys" >nul 2>&1
+call python -c "import sys" >nul 2>&1
 if not errorlevel 1 (
   set "PY=python"
   goto check_python
 )
-python3 -c "import sys" >nul 2>&1
+call python3 -c "import sys" >nul 2>&1
 if not errorlevel 1 (
   set "PY=python3"
   goto check_python
@@ -116,7 +117,7 @@ if defined BOOTSTRAPPED goto no_python_help
 set "BOOTSTRAPPED=1"
 echo OffGrid: first run needs a private Python runtime.
 echo It will be downloaded into this folder, not installed system-wide.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\launch\bootstrap.ps1"
+call powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\launch\bootstrap.ps1"
 if exist "%ROOT%\runtime\python\python.exe" (
   set "PY=%ROOT%\runtime\python\python.exe"
   set "PYARGS="
