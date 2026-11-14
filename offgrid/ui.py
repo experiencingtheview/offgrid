@@ -201,6 +201,20 @@ class UI:
             return True
         return answer in ("", "y", "yes")
 
+    def confirm_action(self, text: str) -> bool:
+        """Ask a human to approve a non-shell action, such as a device write."""
+        if not sys.stdin.isatty():
+            self.warn(f"needs approval, no terminal: {text}")
+            return False
+        print()
+        print("  " + self.paint(text, _Colors.YELLOW, _Colors.BOLD))
+        try:
+            answer = input("  [y]es / [n]o: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return answer in ("", "y", "yes")
+
     def ask(self, text: str) -> str:
         try:
             return input(text)

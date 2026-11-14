@@ -1,0 +1,13 @@
+OffGrid Studio's browser interface is a customized copy of the llama.cpp
+server web UI, tag b9000:
+
+  https://github.com/ggml-org/llama.cpp/tree/b9000/tools/server/public
+
+Copyright (c) 2023-2026 The ggml authors.
+Licensed under the MIT License; the full text is in LICENSE.llama.cpp.
+
+OffGrid changes: the OffGrid title and favicon, the team/status badge in
+offgrid.css and offgrid.js, the local OpenAI-compatible adapter in
+offgrid/studio.py, debounced SearchInput callbacks in bundle.js, and the split
+PDF.js worker in pdf.worker.mjs. PDF.js is licensed under the Apache License
+2.0; its licence notice remains at the top of the worker.

@@ -55,8 +55,9 @@ PY
 The 35B option is Qwen3.6-35B-A3B Q4_K_M, about 20.5 GB on disk. It is a
 mixture-of-experts model with roughly 3B active parameters, but the full file
 still has to be read and the machine should have about 32 GB of RAM. A 16 GB
-machine should use `7b` or `14b`. CPU-only inference will be slow even when the
-file fits; a fast disk and enough memory matter.
+machine can run the `12b` option instead; below 16 GB use `7b`. CPU-only
+inference will be slow even when the file fits; a fast disk and enough memory
+matter.
 
 ```console
 python3 scripts/setup_usb.py --dry-run --model 35b
@@ -65,6 +66,20 @@ python3 scripts/setup_usb.py --target /media/USB/offgrid --model 35b
 
 Model downloads are checked against a pinned SHA-256. A mismatch deletes the
 partial download and reports the expected and actual hash.
+
+## The 12B model warns about memory
+
+The `12b` option is JetBrains Mellum2.1-12B-A2.5B-Thinking Q4_K_M, about 8.1 GB
+on disk and roughly 10 GB in memory while it runs. It is a 12B mixture-of-experts
+model with only ~2.5B active parameters, so it is fast per token on a small
+machine, but the whole file still has to be resident. The wizard and the direct
+builder warn below 15 GB of RAM and recommend 16 GB; choose `7b` on a smaller
+machine.
+
+```console
+python3 scripts/setup_usb.py --dry-run --model 12b
+python3 scripts/setup_usb.py --target /media/USB/offgrid --model 12b
+```
 
 ## The 80B model does not fit or is very slow
 
@@ -158,16 +173,17 @@ The launcher now prints why it stopped and waits for a key press, but a window
 that cannot start at all still closes quickly. Open a Command Prompt in the
 bundle folder and run `OffGrid.bat` to read the message. The usual causes are:
 
-- no Python 3.9+ installed, or only the Microsoft Store alias, which is not a
-  working interpreter; install Python from python.org and tick "Add python.exe
-  to PATH", or run `py -3 offgrid.pyz chat`;
+- the first-run Python download could not finish. Keep the window open, check
+  the internet connection and run it again; setup stores the runtime inside the
+  OffGrid folder, so it only downloads once;
 - the `.bat` was run from inside the zip viewer, so `launch\offgrid.bat` was
   never extracted; extract the whole zip first;
 - a stale `OFFGRID_PORT` points at a hung model server; unset it or run
   `offgrid doctor`.
 
-The launcher prefers a bundled `runtime\python\python.exe`, then `py -3`, then
-`python`, and only uses one that actually runs and is 3.9 or newer.
+The launcher prefers a bundled or first-run `runtime\python\python.exe`, then
+`py -3`, then `python`, and only uses one that actually runs and is 3.9 or
+newer. No separate Python installation is required.
 
 ## Windows Smart App Control refuses the bundle
 
@@ -180,11 +196,11 @@ the folder:
 powershell -Command "Get-ChildItem -Recurse | Unblock-File"
 ```
 
-The portable zip runs your installed Python, so it needs no unsigned program.
-The full USB bundle also ships `runtime/python/python.exe` and
-`llama-server.exe`, which Smart App Control can refuse even after unblocking;
-prefer the portable zip on those machines. Turning Smart App Control off is not
-reversible without resetting Windows, so try unblocking first.
+The portable zip can download a private Python runtime and `llama-server.exe`,
+which Smart App Control may refuse even after unblocking. Unblock the zip first;
+if the app still refuses them, explicitly allow the extracted folder in Windows
+Security. Turning Smart App Control off is not reversible without resetting
+Windows, so try unblocking first.
 
 ## `--speak` is silent
 

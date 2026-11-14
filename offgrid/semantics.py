@@ -23,7 +23,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 DIMS = 256
 _WORD = re.compile(r"[a-z0-9_]{2,}")

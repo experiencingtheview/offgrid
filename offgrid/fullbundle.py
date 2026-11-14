@@ -57,6 +57,19 @@ MODELS: Dict[str, Dict[str, object]] = {
         "ram": "10 GB",
         "note": "recommended default; good at multi-file edits and tool calls",
     },
+    "12b": {
+        "repo": "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF",
+        "file": "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
+        "sha256": "ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755",
+        "gb": 8.1,
+        "ram": "15 GB minimum (16 GB recommended)",
+        "min_ram_gb": 15,
+        "recommended_ram_gb": 16,
+        "note": (
+            "agentic coder: 12B total with ~2.5B active (MoE), Apache-2.0; "
+            "needs about 10 GB of memory, so a 16 GB laptop or a 12 GB GPU is enough"
+        ),
+    },
     "14b": {
         "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
         "file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
@@ -283,6 +296,9 @@ def _safe_extract_tar(tf: tarfile.TarFile, destination: Path) -> None:
     # a later member outside the destination (the 3.12 ``data`` filter does
     # this itself, but 3.9-3.11 have no filter at all).
     for member in tf.getmembers():
+        # Archives made by some tools include a harmless "." root entry.
+        if member.name in ("", ".", "./"):
+            continue
         _validate_tar_member(member, root)
         if data_filter:
             tf.extract(member, root, filter="data")
@@ -659,7 +675,7 @@ def ram_warning(model: str, available_gb: Optional[float] = None) -> str:
         return (
             f"{model} wants {need} RAM; this machine has {available_gb:.1f} GB. "
             "It may run only by paging weights from disk, which is very slow; "
-            "choose 35b or a smaller model, or add RAM."
+            "choose a smaller model, or add RAM."
         )
     return ""
 

@@ -1,0 +1,400 @@
+/* OffGrid Studio: small, non-intrusive additions to the chat surface. */
+#offgrid-badge {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 2147483000;
+  width: min(330px, calc(100vw - 28px));
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #3f3f46;
+  border-radius: 12px;
+  background: rgba(17, 19, 23, 0.95);
+  color: #f4f4f5;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(8px);
+  font: 12px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#offgrid-badge .offgrid-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#offgrid-badge .offgrid-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #ff8a3d;
+  color: #17191d;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+#offgrid-badge strong {
+  display: block;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+#offgrid-badge small {
+  display: block;
+  color: #a1a1aa;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#offgrid-badge .offgrid-status {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #27272a;
+  color: #a1a1aa;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+#offgrid-badge .offgrid-ready {
+  background: #14351f;
+  color: #86efac;
+}
+
+#offgrid-badge .offgrid-offline {
+  background: #3a2412;
+  color: #fdba74;
+}
+
+#offgrid-badge .offgrid-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#offgrid-team-toggle,
+#offgrid-home-toggle {
+  flex: 1;
+  padding: 4px 10px;
+  border: 1px solid #52525b;
+  border-radius: 7px;
+  background: #1f2127;
+  color: #e4e4e7;
+  font: inherit;
+  cursor: pointer;
+}
+
+#offgrid-team-toggle:hover,
+#offgrid-home-toggle:hover {
+  background: #27272a;
+}
+
+#offgrid-team-toggle[aria-expanded="true"],
+#offgrid-home-toggle[aria-expanded="true"] {
+  border-color: #ff8a3d;
+  color: #ff8a3d;
+}
+
+#offgrid-summary {
+  margin-top: 6px;
+  color: #a1a1aa;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+#offgrid-team,
+#offgrid-home {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #27272a;
+}
+
+#offgrid-team[hidden],
+#offgrid-home[hidden],
+#offgrid-home-connected[hidden],
+#offgrid-home-form[hidden],
+#offgrid-home-devices[hidden] {
+  display: none;
+}
+
+#offgrid-home {
+  max-height: min(58vh, 430px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+#offgrid-home .offgrid-home-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#offgrid-home .offgrid-home-status {
+  color: #a1a1aa;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+#offgrid-home .offgrid-home-lede {
+  margin: 4px 0 8px;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+#offgrid-home label {
+  display: block;
+  margin: 0 0 8px;
+  color: #d4d4d8;
+  font-size: 11px;
+}
+
+#offgrid-home input[type="text"],
+#offgrid-home input[type="url"],
+#offgrid-home input[type="password"] {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 3px;
+  padding: 5px 7px;
+  border: 1px solid #52525b;
+  border-radius: 6px;
+  background: #18181b;
+  color: #f4f4f5;
+  font: inherit;
+}
+
+#offgrid-home input:focus {
+  border-color: #ff8a3d;
+  outline: none;
+}
+
+#offgrid-home .offgrid-home-hint {
+  margin: 0 0 8px;
+  color: #a1a1aa;
+  font-size: 10px;
+}
+
+#offgrid-home .offgrid-home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+#offgrid-home button {
+  padding: 5px 9px;
+  border: 1px solid #ff8a3d;
+  border-radius: 7px;
+  background: #ff8a3d;
+  color: #17191d;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#offgrid-home button:hover {
+  filter: brightness(1.08);
+}
+
+#offgrid-home button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+#offgrid-home button.offgrid-secondary {
+  border-color: #52525b;
+  background: transparent;
+  color: #e4e4e7;
+  font-weight: 400;
+}
+
+#offgrid-home .offgrid-home-connected {
+  padding: 7px 8px;
+  border: 1px solid #2f5d3c;
+  border-radius: 8px;
+  background: #122519;
+  color: #bbf7d0;
+  font-size: 11px;
+}
+
+#offgrid-home .offgrid-home-connected button {
+  margin-top: 7px;
+  border-color: #3f6b4c;
+  background: transparent;
+  color: #bbf7d0;
+  font-weight: 400;
+}
+
+#offgrid-home .offgrid-home-error {
+  margin: 6px 0 0;
+  color: #fca5a5;
+  font-size: 11px;
+}
+
+#offgrid-home .offgrid-home-success {
+  margin: 6px 0 0;
+  color: #86efac;
+  font-size: 11px;
+}
+
+#offgrid-home .offgrid-home-found {
+  margin: 0 0 6px;
+  color: #d4d4d8;
+  font-size: 11px;
+}
+
+#offgrid-home .offgrid-home-entities {
+  max-height: 160px;
+  margin-bottom: 8px;
+  padding: 4px 6px;
+  overflow: auto;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  background: #18181b;
+}
+
+#offgrid-home .offgrid-home-group {
+  margin: 5px 0 2px;
+  color: #fdba74;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#offgrid-home .offgrid-entity {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 3px 0;
+  color: #e4e4e7;
+  font-size: 11px;
+}
+
+#offgrid-home .offgrid-entity input {
+  margin: 2px 0 0;
+  accent-color: #ff8a3d;
+}
+
+#offgrid-home .offgrid-entity small {
+  display: block;
+  color: #a1a1aa;
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#offgrid-home .offgrid-home-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#offgrid-home .offgrid-home-check input {
+  margin: 2px 0 0;
+  accent-color: #ff8a3d;
+}
+
+#offgrid-team ul {
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+#offgrid-team li {
+  padding: 4px 0;
+  border-top: 1px solid #27272a;
+}
+
+#offgrid-team li:first-child {
+  border-top: 0;
+}
+
+#offgrid-team li span {
+  color: #a1a1aa;
+}
+
+#offgrid-team li em {
+  margin-left: 4px;
+  color: #fdba74;
+  font-size: 9px;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#offgrid-team .offgrid-workspace,
+#offgrid-team .offgrid-warning {
+  margin: 6px 0 0;
+  color: #a1a1aa;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+#offgrid-team .offgrid-warning {
+  color: #fdba74;
+}
+
+@media (max-width: 600px) {
+  #offgrid-badge {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+  }
+}
+
+#offgrid-badge .offgrid-skeleton-line {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #27272a 0%, #3f3f46 50%, #27272a 100%);
+  background-size: 200% 100%;
+  animation: offgrid-skeleton-shimmer 1.4s linear infinite;
+}
+
+#offgrid-summary.offgrid-skeleton {
+  min-height: 14px;
+}
+
+#offgrid-summary.offgrid-skeleton .offgrid-skeleton-line {
+  width: 72%;
+}
+
+#offgrid-team .offgrid-skeleton-stack {
+  display: grid;
+  gap: 7px;
+  padding: 7px 0 3px;
+}
+
+#offgrid-team .offgrid-skeleton-stack .offgrid-skeleton-line:nth-child(1) {
+  width: 58%;
+}
+
+#offgrid-team .offgrid-skeleton-stack .offgrid-skeleton-line:nth-child(2) {
+  width: 82%;
+}
+
+#offgrid-team .offgrid-skeleton-stack .offgrid-skeleton-line:nth-child(3) {
+  width: 44%;
+}
+
+@keyframes offgrid-skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #offgrid-badge .offgrid-skeleton-line {
+    animation: none;
+    background: #34343b;
+  }
+}

@@ -45,10 +45,13 @@ Issues = "https://github.com/experiencingtheview/offgrid/issues"
 [tool.setuptools]
 packages = ["offgrid"]
 
+[tool.setuptools.package-data]
+offgrid = ["web/*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "offgrid.__version__" }
 
 [tool.setuptools.data-files]
 "share/offgrid" = ["README.md", "LICENSE", "pyproject.toml", "OffGrid.sh", "OffGrid.command", "OffGrid.bat"]
-"share/offgrid/launch" = ["launch/offgrid.sh", "launch/offgrid.command", "launch/offgrid.bat"]
+"share/offgrid/launch" = ["launch/offgrid.sh", "launch/offgrid.command", "launch/offgrid.bat", "launch/bootstrap.sh", "launch/bootstrap.ps1"]
 "share/offgrid/scripts" = ["scripts/setup_usb.py", "scripts/fetch_library.py", "scripts/demo.py"]

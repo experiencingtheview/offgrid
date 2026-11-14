@@ -58,18 +58,136 @@ The interesting part is not the model — it is the **orchestration**. A 7B mode
 |---|---|
 | **Free forever** | local weights, no API keys, no quotas, no per-token bill |
 | **Offline** | refuses non-localhost endpoints by default; `--offline` blocks network tools outright |
+| **Balances model calls** | round-robin across multiple OpenAI-compatible endpoints, with per-call failover; the loopback rule still applies |
 | **Multi-agent** | planner, coder, tester, reviewer, analyst, lead — separate prompts, tools and turn budgets |
 | **Real edits** | writes files, applies targeted edits, searches the repo, runs commands, reads git state |
 | **Self-checking** | reviews its own diff, then runs your test command and fixes failures |
 | **Remembers** | durable notes with confidence and provenance; a project's verify command is learned once |
+| **Caches lookups** | repeated library and memory searches reuse a bounded process-local cache; edits invalidate it |
 | **Shares learning** | accepted notes only, explicit peers and token; incoming lessons stay pending for review |
 | **Carries knowledge** | offline library of survival, medicine and coding references it can search |
+| **Slims images** | lossless PNG recompression and optional JPEG metadata stripping; no Pillow or cloud service |
+| **Researches online** | open-licensed source research only with `--online`; you approve every offline copy |
 | **Admits ignorance** | the honesty rule is in every prompt, every tool and the test suite |
 | **Portable** | pure Python 3.9+ standard library; build a USB bundle with a bundled runtime and model |
 | **Speaks** | final reports read aloud through the voice already on your machine; no cloud TTS |
+| **Local devices** | read sensors and gauges, diagnose faults, and control lights, relays and thermostats through Home Assistant, HTTP or Modbus; read-only until you opt in |
+| **Signal hardware** | with a connected Flipper Zero, read RFID/NFC/iButton/IR and receive Sub-GHz; read-only except one explicitly authorized IR send |
 | **Safe-ish** | writes confined to the workspace, destructive commands refused or gated, shell policy per run |
 
 ---
+
+## One app: OffGrid Studio
+
+`offgrid studio` puts the whole team in one local browser page. It serves a
+customized copy of llama.cpp's MIT server web UI, branded OffGrid, with a Team
+panel that shows the current roster and workspace. While that data loads, the
+badge and panel show skeleton placeholders instead of an empty box. The team
+poll refreshes every 30 seconds but only writes changed text and panel markup,
+so an unchanged poll does not re-render the panel. Search
+fields update their text immediately, then wait 150 ms before filtering, so
+typing does not run the filter on every keystroke. The optional PDF.js worker
+ships as a separate chunk and is fetched only when a PDF is opened. Chat
+attachment thumbnails, PDF pages and inline tool images load lazily and decode
+asynchronously; an opened full-size preview stays eager so it appears at once. The non-critical badge script is deferred with low fetch priority, so it does
+not compete with the chat app's startup. Static
+Studio files are kept in a process-local cache with ETags, so a repeat load
+revalidates with `304 Not Modified` instead of rereading the bundle. The
+hand-written Studio and website CSS/JS ship as minified `.min` assets; their
+readable source files remain alongside them. The
+conversation sidebar renders the newest 20 chats and reveals older ones in
+batches, keeping the active chat visible. JSON API responses use gzip when the
+client accepts it, and gzip request bodies are accepted with the same 1 MB
+decompressed-size limit. A message runs through the same planner, coder, reviewer, tester and lead as `offgrid run`; custom agents
+from `.offgrid/agents.json` are included.
+
+```console
+python3 -m offgrid studio
+# open http://127.0.0.1:8099/
+```
+
+Start llama.cpp, Ollama or LM Studio first, exactly as for the terminal. The
+page is local-only by default. Binding to a LAN interface needs an access key
+(`offgrid studio --host 0.0.0.0 --access-key ...`); open the printed URL once
+and Studio sets an HttpOnly cookie for the session. Use `--auto` only when you
+want the team to run shell commands without asking; the normal command policy
+still refuses the dangerous ones. The interface is derived from llama.cpp
+(MIT); see `offgrid/web/NOTICE` and `offgrid/web/LICENSE.llama.cpp`.
+
+## Property and rig control
+
+The same team can read a property's sensors and gauges and, when you explicitly
+allow it, switch lights, relays, pumps and thermostats. For Home Assistant, open
+the **Home** button in Studio and enter its local address and a long-lived
+access token: the guided setup tests the connection, lists supported entities,
+and writes the private registry and token file for you. It defaults to
+read-only, omits locks/covers/climate, and preserves existing devices and policy.
+Devices are declared in
+`.offgrid/devices.json`; the agents get `devices_list`, `device_read`,
+`device_diagnose` and `device_set` tools. Three adapters cover most off-grid
+gear: Home Assistant (thousands of local integrations), direct HTTP JSON
+(Tasmota, ESPHome, Shelly, custom controllers) and Modbus TCP (solar inverters,
+charge controllers, PLCs). A simulator is included for testing without
+hardware.
+
+```console
+python3 -m offgrid devices list
+python3 -m offgrid devices read cabin battery
+python3 -m offgrid devices diagnose cabin
+python3 -m offgrid devices set cabin porch_light on --yes
+```
+
+Reads are always allowed. Writes are **read-only by default**; enable `ask` or
+`auto` only after testing in read-only mode. Numeric points need a declared
+`min`/`max`, and locks, covers, heaters and similar points also need an explicit
+dangerous-point opt-in. Every write is range-checked, attempted against the real
+device, verified with a read-back where possible, and appended to
+`.offgrid/devices-audit.jsonl` before anything is sent. Device URLs must resolve
+to loopback, link-local or private addresses unless the registry explicitly
+sets `allow_public`.
+
+This is an operator convenience, **not a safety-rated controller**. Keep pumps,
+heaters, locks, medical equipment and any life-support load on their own
+hardware interlocks, fuses and breakers. See [docs/DEVICES.md](docs/DEVICES.md)
+for the registry format, examples and limits.
+
+## Flipper Zero and signals
+
+When a Flipper Zero is connected over USB serial, the team can use it as a
+read-only signal probe. Nothing is assumed: `signals_status` (or `offgrid
+signals status`) reports whether suitable hardware was found, and every other
+signal operation fails cleanly instead of pretending a device is there.
+
+```console
+python3 -m offgrid signals status
+python3 -m offgrid signals info
+python3 -m offgrid signals read rfid
+python3 -m offgrid signals read nfc --seconds 5
+python3 -m offgrid signals read ir --seconds 5
+python3 -m offgrid signals scan 433920000 --seconds 5
+python3 -m offgrid signals ir-send NEC 1234 5678 --signal-policy ask
+```
+
+Supported stock-firmware operations are `info`, RFID, NFC, iButton and IR
+receive, Sub-GHz receive, and one IR transmit command. RFID, NFC, iButton, IR
+receive and Sub-GHz receive are **read-only**. IR transmit is the only write and
+is off by default: set `--signal-policy ask` (prompt) or `auto` (no prompt) and
+supply a protocol/address/command you are authorized to send. Every IR
+transmission is recorded in `.offgrid/signals-audit.jsonl` **before** it reaches
+the Flipper, and if that audit cannot be written the command is not sent.
+Read/receive attempts are recorded too.
+
+This is deliberately **not** a Flipper replacement. Sub-GHz transmit, replay,
+cloning, emulation, BadUSB, GPIO writes, NFC/RFID writes and an arbitrary Flipper
+CLI are not exposed. Use signals only on your own equipment or with the explicit
+permission of the owner, and follow your local radio regulations. Signals read
+from the air are untrusted data, never instructions.
+
+USB serial detection uses `/dev/serial/by-id/*Flipper*`, `/dev/cu.usbmodemflip*`,
+`/dev/ttyACM*` and `/dev/ttyUSB*` on Linux/macOS. Add your user to the `dialout`
+group on Linux if the port is not accessible. Windows is not supported because
+the standard library has no serial API there. See [docs/SIGNALS.md](docs/SIGNALS.md)
+for firmware variations, limits and safety rules.
 
 ## Quickstart
 
@@ -87,10 +205,13 @@ on a USB stick — use its top-level launcher:
 | Linux | run `./OffGrid.sh` |
 | Any terminal | `./OffGrid.sh chat` |
 
-With no arguments the launcher opens the interactive chat; if the folder has a
-bundled model server, it starts that first. The same files are in `launch/` for
-scripts that already use that path. An installed copy can run `offgrid-launch`,
-which is the same as `offgrid chat`.
+With no arguments the launcher opens the one-click browser setup; if the folder
+has a bundled model server, it starts that first and goes straight to Studio.
+The same files are in `launch/` for scripts that already use that path. No
+Python, terminal or model server is needed for a fresh download: setup can
+fetch a private Python runtime, llama.cpp and the starter model into the
+folder. An installed copy can run `offgrid-launch`, which is the same entry
+point.
 
 ### Check the setup in one step
 
@@ -189,7 +310,7 @@ If upstream has no prebuilt llama.cpp binary for your platform, the standalone b
 
 ### The download button on the website
 
-The project site's download button serves the latest release asset, `offgrid-portable.zip`. Unzip it and run `OffGrid.command` on macOS, `OffGrid.bat` on Windows, or `OffGrid.sh` on Linux. A terminal opens, `offgrid setup` reports the interpreter and the local model servers it found (or the two free ways to start one), and the chat starts once a server answers. The bundle carries the source and the single-file app, so setup needs no second download. Nothing is installed system-wide and no administrator rights are needed.
+The project site is served through Cloudflare Workers, with the page and static assets cached at the edge for five minutes. The download button serves a copy of `offgrid-portable.zip` from the site itself, so it keeps working even when the GitHub release is stale or rate-limited. Unzip it and run `OffGrid.command` on macOS, `OffGrid.bat` on Windows, or `OffGrid.sh` on Linux. No Python, terminal or model server is needed: the launcher opens a local setup page, and one button downloads a private Python runtime when necessary, a llama.cpp engine and the free Qwen2.5-Coder 3B model. Setup then opens Studio, the browser app. Nothing is installed system-wide, no account is required, and no administrator rights are needed. The first run needs internet; after that the model and engine stay in the OffGrid folder and work offline.
 
 The release is built by `.github/workflows/release.yml` from the repository's own builder whenever a `v*` tag is pushed. The version is written once, in `offgrid/__init__.py`; the workflow refuses a tag that disagrees with it, then runs `unzip -t` and checks that the launchers are present and executable, so the asset a visitor gets is the one the tests saw. Dispatching the workflow with an existing tag re-publishes that release, which is the only reason to run it by hand. The release notes are that version's section in `CHANGELOG.md`, so the release page and the repository cannot drift apart, and a version with no changelog section is refused rather than published with empty notes.
 
@@ -199,7 +320,7 @@ Both files are attached to the release. `SHA256SUMS` holds the zip's digest, so 
 $w=(Select-String -Path .\SHA256SUMS -Pattern offgrid-portable.zip).Line.Split()[0]; if((Get-FileHash .\offgrid-portable.zip -Algorithm SHA256).Hash -ne $w){throw 'SHA-256 mismatch'}
 ```
 
-It takes the expected digest out of `SHA256SUMS`, hashes the zip and throws on a mismatch, so a bad download stops instead of being compared by eye. `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` on its own just prints the hash. The workflow runs the same check on the archive it built, so the value it publishes is the value it verified. The download button reads that file when the page is served and shows the current digest beside it, with the check command, so the page cannot advertise a digest for a different build. A **Copy** button next to the digest puts it on the clipboard, using one small same-origin script; where the clipboard API is unavailable it selects the digest so the keyboard shortcut works instead.
+It takes the expected digest out of `SHA256SUMS`, hashes the zip and throws on a mismatch, so a bad download stops instead of being compared by eye. `Get-FileHash .\offgrid-portable.zip -Algorithm SHA256` on its own just prints the hash. The same manifest is served next to the site's zip, and the page reads it when it is served and shows the current digest beside the button, with the check command, so the page cannot advertise a digest for a different build. A **Copy** button next to the digest puts it on the clipboard, using one small same-origin script; where the clipboard API is unavailable it selects the digest so the keyboard shortcut works instead.
 
 ### Downloadable portable app and device install
 
@@ -209,7 +330,7 @@ For a small app you can copy to several machines or USB sticks, build a portable
 python3 -m offgrid.cli distribute --build dist/offgrid-portable.zip
 ```
 
-That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, top-level launchers, launch scripts, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime. The target needs Python 3.9+ and a local model server such as Ollama, llama.cpp, LM Studio or vLLM. Unzip it and double-click `OffGrid.command` or `OffGrid.bat`, or run `./OffGrid.sh` on Linux. On Windows, install Python from python.org and tick "Add python.exe to PATH"; the Microsoft Store alias is not a working interpreter. If a console flashes and closes, run `OffGrid.bat` from a Command Prompt to read the message, and if Smart App Control or SmartScreen blocks the download, unblock the zip before extracting (Properties -> Unblock, or `Get-ChildItem -Recurse | Unblock-File`).
+That writes `dist/offgrid-portable.zip` and `dist/offgrid-portable.pyz`. The archive contains the source, top-level launchers, launch scripts, bootstrap files, the single-file app and a `README-FIRST.txt`; it does not contain model weights or a Python runtime, so it stays small. On first launch it can download a private Python runtime and the AI engine into the folder if they are missing, then the starter model. Unzip it and double-click `OffGrid.command` or `OffGrid.bat`, or run `./OffGrid.sh` on Linux. On Windows, keep the black window open while setup downloads; if SmartScreen blocks the zip, right-click it, choose Properties, tick Unblock, then extract again.
 
 The same command has a terminal wizard and a mounted-device installer:
 
@@ -257,11 +378,18 @@ Anything on an OpenAI-compatible local endpoint works: llama.cpp, Ollama, LM Stu
 |---|---|---|---|
 | `qwen2.5-coder:3b` | ~2 GB | 6 GB | fine for one-file changes and quick questions |
 | `qwen2.5-coder:7b` | ~4.7 GB | 10 GB | **default recommendation** — decent plans, reliable tool calls |
+| `Mellum2.1-12B-A2.5B-Thinking` (Q4_K_M) | ~8.1 GB | 16 GB | 12B total with ~2.5B active (MoE), Apache-2.0; the strongest laptop-class option, tuned for long agentic coding runs |
 | `qwen2.5-coder:14b` | ~9 GB | 20 GB | noticeably better review and multi-file reasoning |
 | `Qwen3.6-35B-A3B` (Q4_K_M) | ~20.5 GB | 32 GB | 35B total with ~3B active (MoE), Apache-2.0; strong high-end option |
 | `Qwen3-Next-80B-A3B` (Q4_K_M) | ~48.4 GB | 64 GB min / 96 GB recommended | opt-in 80B total with ~3B active (MoE), Apache-2.0; needs a fast SSD and a high-RAM machine |
 
-The full-bundle builder names these `3b`, `7b`, `14b`, `35b` and `80b`; `7b` remains the default. The 35B model is a real, downloadable Qwen3.6 MoE model, not a renamed 7B: it needs a 32 GB machine and a fast disk, and it will be slower on CPU-only hardware. The **80B option is explicit opt-in**: it is not selected automatically, needs at least 64 GB RAM (96 GB recommended) and about 50 GB free, and is much slower when the machine has to page weights from disk.
+To run the Mellum model directly instead of through the bundle:
+
+```console
+llama-server -hf JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF:Q4_K_M --port 8080 --jinja -c 8192
+```
+
+The full-bundle builder names these `3b`, `7b`, `12b`, `14b`, `35b` and `80b`; `7b` remains the default. The `12b` option is JetBrains Mellum2.1 Thinking, an 8.1 GB MoE with 2.5B active parameters that is tuned for agentic coding: it explores a codebase, edits files and checks its own changes, and its ~10 GB working set fits a 16 GB laptop or a 12 GB GPU that cannot hold the 35B. The 35B model is a real, downloadable Qwen3.6 MoE model, not a renamed 7B: it needs a 32 GB machine and a fast disk, and it will be slower on CPU-only hardware. The **80B option is explicit opt-in**: it is not selected automatically, needs at least 64 GB RAM (96 GB recommended) and about 50 GB free, and is much slower when the machine has to page weights from disk.
 
 Coder-tuned models are strongly preferred: they follow tool schemas and JSON instructions much better than general chat models. On a CPU-only laptop expect roughly 5–12 tokens/second for the smaller models — a multi-step run takes a minute or two, not seconds. An 80B model can be far slower and disk-bound on a machine below its RAM recommendation.
 
@@ -276,8 +404,13 @@ offgrid demo                                 scripted end-to-end demo, no model 
 offgrid doctor [--strict] [--json]          model setup, hardware and continuity readiness
 offgrid models                               models the server is serving
 offgrid agents                               the team roster
+offgrid devices [list|read|set|diagnose]      sensors, gauges, lights and relays
+offgrid signals [status|info|read|scan|ir-send]  Flipper Zero signals, read-only except IR
+offgrid studio                               the team in one local browser app
 offgrid memory [list|search|add|forget|stats|review|reject|forgive|rejected] what it remembers
 offgrid library [list|search|verify|index]    the offline document library
+offgrid images [compress]                     lossless PNG / JPEG metadata optimization
+offgrid research "topic" --online              deep research with human-approved offline saves
 offgrid council [members|ping|ask]           independent advisors
 offgrid hardware                             what this machine can do, and will run
 offgrid fleet [list|add|remove|ping|scan|serve] use your other devices' power
@@ -300,14 +433,26 @@ Useful flags (all subcommands):
 
 ```console
 --endpoint URL      model server base URL (default: autodetect on localhost)
+--endpoints URLS    comma/repeatable list of base URLs to round-robin, with failover
 --model NAME        model to request
 --workspace DIR     project directory to work in (default: current directory)
 --auto              run shell commands without asking (dangerous ones still gated)
 --no-shell          agents may edit files but never run a command
 --offline           refuse network tools and package installs
+--online            allow deep research from open-licensed sources (off by default)
+--research-timeout N seconds to wait for a research source (default: 20)
+--research-cache DIR private research API cache (default: .offgrid/research-cache)
+--research-cache-ttl N seconds a cached research response stays fresh (default: 3600; 0 disables)
+--refresh-research  ignore cached research responses and fetch fresh ones
 --parallel N        run independent plan steps concurrently (default 1)
 --effort PROFILE    best (default) | balanced | fast - see "Effort" below
 --fleet             also use other devices on this network running `offgrid fleet serve`
+--devices-file FILE device registry (default: .offgrid/devices.json)
+--device-policy P   read-only (default) | ask | auto - override the registry policy
+--allow-dangerous-devices  permit locks/covers/heaters marked dangerous; fit physical interlocks first
+--signal-policy P   read-only (default) | ask | auto - only IR transmit is a write
+--signals-port PORT Flipper serial port (default: auto-detect USB serial)
+--signal-timeout N  seconds to wait for a signal operation (default: 8)
 --no-scale          ignore measured hardware; use the effort profile exactly as written
 --no-review         do not ask about new lessons at the end; they stay pending
 --max-turns N       tool turns per agent (default 12)
@@ -356,6 +501,38 @@ Exit code is `0` on success, `1` if verification failed, `2` if no model server 
 - **reviewer** — read-only. Correctness, completeness, safety, fit. Returns `approve` or `changes` plus instructions.
 - **analyst** — read-only investigation when a step needs understanding rather than editing.
 - **critic** — compares several candidate plans and keeps the strongest, or merges the best parts. Only drafted plans it can compare; never invents files or APIs.
+
+### More than six agents
+
+The six built-in roles are always present, and you can add as many teammates as
+you want in `.offgrid/agents.json` (or the file named by `agents_file` in
+`.offgrid.json`, or by `OFFGRID_AGENTS_FILE`). Each one gets its own prompt, tools and turn budget, and the
+planner is told it can assign a step to it by key:
+
+```json
+{
+  "agents": [
+    {
+      "key": "security",
+      "title": "who audits the change for secrets and unsafe commands",
+      "prompt": "You are security. Read the diff and the touched files. Report concrete findings with paths; never edit.",
+      "tools": ["read_file", "search_files", "git_diff", "finish"],
+      "max_turns": 6
+    },
+    {"key": "coder2", "like": "coder"}
+  ]
+}
+```
+
+`"like"` clones a built-in role's prompt, tool set and turn budget, which is how
+you add a second coder without writing a prompt. Tools are checked against the
+known list, unknown ones are refused, and a custom key cannot replace a built-in
+role. `offgrid agents` prints the merged roster and reports entries it could not
+load; a warning never stops the rest of the team from running. The file lives
+under `.offgrid/`, which git ignores by default, so it is local to your copy.
+
+The reviewer, tester, verification and honesty rules are not customisable this
+way: adding agents extends the team, it does not remove the checks.
 
 Steps with no unmet `depends_on` run in the same wave (with `--parallel N`), then a **mechanical gate** checks the changed files with no model involved, then the diff is reviewed (twice, under `best`), then verification runs, then failing tests are fed back to a coder, bounded by `test_fix_rounds` and `review_rounds`. A task that still fails gets one escalated attempt before the run reports the failure. Everything is logged to `.offgrid/<timestamp>.jsonl`.
 
@@ -463,9 +640,43 @@ Rules that are enforced, not just promised:
 
 Speed is explicitly not the goal: a slow answer from the good machine beats a fast wrong one from the small one, and the orchestrator will wait.
 
+### Balancing several local model servers
+
+If more than one OpenAI-compatible server is running, OffGrid can rotate model
+calls between them instead of using only the first. This is a client-side
+round-robin load balancer, not a proxy and not a new network service:
+
+```console
+offgrid run "port the parser to rust" \
+  --endpoints http://127.0.0.1:8080/v1,http://127.0.0.1:8081/v1
+
+# repeat the flag or use a workspace config instead
+offgrid chat --endpoints http://127.0.0.1:8080/v1 \
+             --endpoints http://127.0.0.1:11434/v1
+```
+
+Each chat completion goes to the next endpoint in order. If that endpoint fails,
+the same request is tried on the others before the run reports an error. The
+counter is per process, so it starts at the first endpoint again after a
+restart. `--endpoints` takes precedence over `--endpoint`; a single endpoint
+continues to behave exactly as before.
+
+This is deliberately **round-robin**, not queue-aware or latency-aware: it does
+not claim to know which server is busy. The benefits are spreading agent turns
+and surviving a dead server. All endpoints must speak the same OpenAI API and
+load the requested model (or report a compatible default). The normal loopback
+rule applies to every endpoint; a remote one still needs `--allow-remote`.
+`--offline` continues to block network tools, but it does not change the
+existing local-model-endpoint behavior. The same API key, if configured, is
+sent to each endpoint. For using separate machines on your LAN, use the fleet
+instead; see the fleet section above.
+
+See [docs/LOAD_BALANCER.md](docs/LOAD_BALANCER.md) for the exact rules and
+failure behavior.
+
 ## It remembers, and it learns from itself
 
-Memory is a small SQLite file at `.offgrid/memory.db` — stdlib, no vectors, no service, no account. Every entry records **where it came from and how sure it is**, and recall shows that provenance:
+Memory is a small SQLite file at `.offgrid/memory.db` — stdlib, no vectors, no service, no account. It reuses a bounded pool of four SQLite connections with WAL and a busy timeout, so reads can overlap while writes stay serialized. Indexes cover the pending-review queue, recent listings, accepted-by-kind stats and rejection-ledger ordering; new composite indexes are added automatically when an older database is opened. Every entry records **where it came from and how sure it is**, and recall shows that provenance:
 
 ```console
 $ offgrid memory
@@ -746,6 +957,8 @@ $ offgrid library search "how do I make drinking water safe"
 
 Unrelated queries still return nothing rather than the nearest available text: a hit needs a shared concept or shared wording, or genuinely close character overlap (0.42 cosine). Pending lessons stay invisible to meaning search because the review filter runs before ranking.
 
+Repeated library and memory queries reuse a small in-process cache, so the semantic scan is not paid twice for the same question. Library edits are detected from file metadata and memory writes clear the relevant entries; nothing is cached on disk. See [docs/QUERY_CACHE.md](docs/QUERY_CACHE.md).
+
 ## What it can carry offline
 
 `scripts/fetch_library.py` fills a searchable reference library from openly licensed collections, resolved from live listings so you get the current published version:
@@ -765,6 +978,64 @@ python3 scripts/fetch_library.py --search "disinfect water"
 ```
 
 Agents reach it through `library_search` and `library_read`. Text files are searched by meaning and cited line by line (see above); ZIM archives are indexed and citable but not text-searchable here — the tool says so instead of pretending. Survival material is reference, not a substitute for real training or emergency services.
+
+## Compressing images without a cloud service
+
+`offgrid images compress` is a small, standard-library image optimizer. PNG
+images are losslessly recompressed; JPEG pixels are never re-encoded, and
+`--strip-metadata` can remove optional APPn/COM metadata.
+
+```console
+offgrid images compress screenshots/
+offgrid images compress screenshots/ --output compressed/
+offgrid images compress screenshots/ --in-place
+```
+
+Existing files are never overwritten by default, paths stay inside the
+workspace, and `--in-place` uses an atomic replace. Already-optimized files
+report `already-optimal`; JPEG orientation metadata is lost only with the
+explicit flag. See [docs/IMAGES.md](docs/IMAGES.md).
+
+## Deep research, saved for offline use
+
+When you are online, `offgrid research` can gather full articles from three
+open-licensed Wikimedia projects: Wikipedia, Wikibooks and Wikiversity. It is
+deliberately not a general web browser: the source list is fixed, every request
+uses HTTPS, redirects are refused, and the text comes from the official
+MediaWiki API. This keeps the feature useful without turning the agent into a
+scraper for arbitrary pages.
+
+```console
+python3 -m offgrid research "solar panel maintenance" --online
+python3 -m offgrid research "water disinfection" --online --limit 4
+python3 -m offgrid research "solar panel maintenance" --online --save 1 3
+```
+
+Each result records its project, article URL, licence, revision id, retrieval
+time and a SHA-256 of the text received. That is **source verification**, not a
+truth verdict: a current Wikipedia article can still be incomplete or wrong,
+and cross-source term overlap is a hint, not proof. The report says so instead
+of labelling an answer "verified true".
+
+Research does not save anything by default. In a terminal it prints the
+candidates and asks which numbers to keep; `--save` is the explicit
+non-interactive equivalent. Agents get `research_query` and `research_save`:
+the model proposes a shortlist, and the human confirms the save before any file
+is written. Saved copies go under `offgrid-library/research/` and are searchable
+through the normal library commands and tools. The source URL, licence,
+revision and hash stay with the copy, so it remains attributable offline.
+
+`--online` is required for all of this. `--offline` wins if both are given.
+Successful API responses are cached under `.offgrid/research-cache` for one
+hour by default, so repeating a query does not hit the network again. The cache
+is private (`0700` directories, `0600` files), stores only validated JSON, and
+never stores failed requests. Change the lifetime with
+`--research-cache-ttl N`, move it with `--research-cache DIR`, or bypass it
+with `--refresh-research`. `--research-cache-ttl 0` disables it; `--offline` still wins
+over every cached response. Every query is sent only to the selected Wikimedia
+project(s); there is no account, no telemetry and no arbitrary URL input. See
+[docs/RESEARCH.md](docs/RESEARCH.md) for the source policy, approval rules and
+limits.
 
 ## The council: other opinions when it does not know
 
@@ -894,6 +1165,7 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
 ```json
 {
   "endpoint": "http://127.0.0.1:8080/v1",
+  "endpoints": [],
   "model": "qwen2.5-coder-7b",
   "command_policy": "ask",
   "network": "deny",
@@ -926,7 +1198,7 @@ Defaults are fine. Override per project with `.offgrid.json` in the workspace, g
 }
 ```
 
-Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_SYNC_PEERS`, `OFFGRID_SYNC_PORT`, `OFFGRID_SYNC_ALLOW_HTTP=1`, `OFFGRID_SYNC_TOKEN`, `OFFGRID_HOUSEHOLD`, `OFFGRID_CARETAKER`, `OFFGRID_CARETAKER_HOUSEHOLD`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
+Environment: `OFFGRID_ENDPOINT`, `OFFGRID_MODEL`, `OFFGRID_API_KEY`, `OFFGRID_TEMPERATURE`, `OFFGRID_MAX_TOKENS`, `OFFGRID_MAX_TURNS`, `OFFGRID_PARALLEL`, `OFFGRID_COMMAND_POLICY`, `OFFGRID_VERIFY`, `OFFGRID_TIMEOUT`, `OFFGRID_OFFLINE=1`, `OFFGRID_NO_MEMORY=1`, `OFFGRID_COUNCIL=1`, `OFFGRID_COUNCIL_PUBLIC=1`, `OFFGRID_COUNCIL_MEMBERS`, `OFFGRID_LIBRARY`, `OFFGRID_RESEARCH_ONLINE=1`, `OFFGRID_RESEARCH_TIMEOUT`, `OFFGRID_RESEARCH_CACHE`, `OFFGRID_RESEARCH_CACHE_TTL`, `OFFGRID_RESEARCH_REFRESH=1`, `OFFGRID_ENDPOINTS`, `OFFGRID_FLEET=1`, `OFFGRID_FLEET_PORT`, `OFFGRID_FLEET_TOKEN`, `OFFGRID_SYNC_PEERS`, `OFFGRID_SYNC_PORT`, `OFFGRID_SYNC_ALLOW_HTTP=1`, `OFFGRID_SYNC_TOKEN`, `OFFGRID_HOUSEHOLD`, `OFFGRID_CARETAKER`, `OFFGRID_CARETAKER_HOUSEHOLD`, `OFFGRID_NO_SCALE=1`, `OFFGRID_CONTEXT`, `OFFGRID_COUNCIL_AUTO=0`, `OFFGRID_SPEAK=1`, `OFFGRID_VOICE`, `OFFGRID_IMPROVE_WHEN_IDLE=1`, `OFFGRID_IMPROVE_IDLE_MINUTES`, `OFFGRID_IMPROVE_RETENTION_DAYS`, `OFFGRID_IMPROVE_KEEP`, `OFFGRID_MAINTENANCE_INTERVAL`, `OFFGRID_MAINTENANCE_IMPROVE=1`, `NO_COLOR=1`.
 
 `-1` on `review_rounds`, `test_fix_rounds`, `review_passes`, `plan_candidates` and `quality_rounds` means "use the effort profile"; any explicit number wins over it. Verification auto-detects `pytest`, `cargo test`, `go test ./...` and `npm test`.
 
@@ -1008,4 +1280,4 @@ result, so a badge that stopped updating does not keep looking green.
 
 ## License
 
-MIT. Yours to fork, ship and sell. The models you download have their own licences (Qwen2.5-Coder and Qwen3.6-35B-A3B are Apache-2.0).
+MIT. Yours to fork, ship and sell. The models you download have their own licences (Qwen2.5-Coder, Qwen3.6-35B-A3B, Qwen3-Next-80B-A3B and Mellum2.1 are Apache-2.0).

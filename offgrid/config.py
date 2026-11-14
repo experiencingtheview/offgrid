@@ -27,6 +27,7 @@ class Config:
     """Every knob in one place. All of it works offline."""
 
     endpoint: str = ""
+    endpoints: Tuple[str, ...] = ()  # optional round-robin model servers
     model: str = ""
     api_key: str = ""
     temperature: float = 0.2
@@ -57,6 +58,17 @@ class Config:
     fleet_file: str = ".offgrid/fleet.json"
     fleet_timeout: int = 180
     fleet_exec: bool = False  # let agents run commands on registered peers
+    # -- local devices (sensors, lights, relays, inverters) ----------------
+    devices_file: str = ".offgrid/devices.json"
+    devices_audit: str = ".offgrid/devices-audit.jsonl"
+    device_policy: str = ""  # empty = use the registry's policy; read-only | ask | auto
+    device_timeout: float = 5.0
+    allow_dangerous_devices: bool = False
+    # -- Flipper Zero / signal hardware -----------------------------------
+    signals_policy: str = "read-only"  # read-only | ask | auto (only IR transmit is a write)
+    signals_port: str = ""  # empty = auto-detect USB serial
+    signals_timeout: float = 8.0
+    signals_audit: str = ".offgrid/signals-audit.jsonl"
     # -- learning sync between installations ------------------------------
     sync_peers: Tuple[str, ...] = ()
     sync_port: int = 8778
@@ -83,10 +95,16 @@ class Config:
     memory: bool = True
     memory_dir: str = ".offgrid"
     lexicon_file: str = ".offgrid/lexicon.json"  # project-specific synonym groups
+    agents_file: str = ".offgrid/agents.json"  # extra agents for this project
     memory_limit: int = 6
     reflect: bool = True
     review_lessons: bool = True  # ask before new lessons are allowed to influence runs
     library_dir: str = "offgrid-library"
+    research_online: bool = False  # explicit opt-in: fetch open-licensed research sources
+    research_timeout: float = 20.0
+    research_cache: str = ".offgrid/research-cache"  # private API response cache; empty disables
+    research_cache_ttl: float = 3600.0  # seconds; 0 disables the cache
+    research_refresh: bool = False  # bypass cached reads for this run
     council: bool = False
     council_members: Tuple[str, ...] = ("local",)
     allow_public_council: bool = False
@@ -136,15 +154,39 @@ class Config:
                 setattr(self, key, value)
         return self
 
+    def resolved_endpoints(self) -> Tuple[str, ...]:
+        """Configured model servers, normalized and in preference order."""
+        raw = self.endpoints if self.endpoints else ((self.endpoint,) if self.endpoint else ())
+        if isinstance(raw, str):
+            raw = (raw,)
+        seen = set()
+        values = []
+        for item in raw:
+            endpoint = str(item or "").strip().rstrip("/")
+            if endpoint and endpoint not in seen:
+                seen.add(endpoint)
+                values.append(endpoint)
+        if values:
+            return tuple(values)
+        if self.endpoint:
+            return (str(self.endpoint).strip().rstrip("/"),)
+        return (CANDIDATE_ENDPOINTS[0],)
+
     def resolved_endpoint(self) -> str:
-        return (self.endpoint or CANDIDATE_ENDPOINTS[0]).rstrip("/")
+        return self.resolved_endpoints()[0]
 
     def as_dict(self) -> Dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def describe(self) -> str:
+        endpoints = self.resolved_endpoints()
+        endpoint_label = (
+            f"{len(endpoints)} endpoints ({endpoints[0]} +{len(endpoints) - 1})"
+            if len(endpoints) > 1
+            else endpoints[0]
+        )
         return (
-            f"endpoint={self.resolved_endpoint()} model={self.model or '(auto)'} "
+            f"endpoint={endpoint_label} model={self.model or '(auto)'} "
             f"parallel={self.parallel} turns={self.max_turns} "
             f"commands={self.command_policy} network={self.network} "
             f"effort={self.effort} memory={'on' if self.memory else 'off'} "
@@ -217,6 +259,12 @@ def _from_env() -> Dict[str, Any]:
             out[key] = caster(raw)
         except ValueError:
             continue
+    if env.get("OFFGRID_ENDPOINTS"):
+        out["endpoints"] = tuple(
+            part.strip().rstrip("/")
+            for part in env["OFFGRID_ENDPOINTS"].split(",")
+            if part.strip()
+        )
     if env.get("OFFGRID_OFFLINE", "").lower() in ("1", "true", "yes"):
         out["offline"] = True
         out["network"] = "deny"
@@ -271,8 +319,50 @@ def _from_env() -> Dict[str, Any]:
             pass
     if env.get("OFFGRID_LIBRARY"):
         out["library_dir"] = env["OFFGRID_LIBRARY"]
+    if env.get("OFFGRID_RESEARCH_ONLINE", "").lower() in ("1", "true", "yes"):
+        out["research_online"] = True
+    if env.get("OFFGRID_RESEARCH_TIMEOUT"):
+        try:
+            out["research_timeout"] = float(env["OFFGRID_RESEARCH_TIMEOUT"])
+        except ValueError:
+            pass
+    if env.get("OFFGRID_RESEARCH_CACHE"):
+        out["research_cache"] = env["OFFGRID_RESEARCH_CACHE"]
+    if env.get("OFFGRID_RESEARCH_CACHE_TTL"):
+        try:
+            out["research_cache_ttl"] = float(env["OFFGRID_RESEARCH_CACHE_TTL"])
+        except ValueError:
+            pass
+    if env.get("OFFGRID_RESEARCH_REFRESH", "").lower() in ("1", "true", "yes"):
+        out["research_refresh"] = True
     if env.get("OFFGRID_LEXICON"):
         out["lexicon_file"] = env["OFFGRID_LEXICON"]
+    if env.get("OFFGRID_AGENTS_FILE"):
+        out["agents_file"] = env["OFFGRID_AGENTS_FILE"]
+    if env.get("OFFGRID_DEVICES_FILE"):
+        out["devices_file"] = env["OFFGRID_DEVICES_FILE"]
+    if env.get("OFFGRID_DEVICES_AUDIT"):
+        out["devices_audit"] = env["OFFGRID_DEVICES_AUDIT"]
+    if env.get("OFFGRID_DEVICE_POLICY"):
+        out["device_policy"] = env["OFFGRID_DEVICE_POLICY"]
+    if env.get("OFFGRID_DEVICE_TIMEOUT"):
+        try:
+            out["device_timeout"] = float(env["OFFGRID_DEVICE_TIMEOUT"])
+        except ValueError:
+            pass
+    if env.get("OFFGRID_ALLOW_DANGEROUS_DEVICES", "").lower() in ("1", "true", "yes"):
+        out["allow_dangerous_devices"] = True
+    if env.get("OFFGRID_SIGNAL_POLICY"):
+        out["signals_policy"] = env["OFFGRID_SIGNAL_POLICY"]
+    if env.get("OFFGRID_SIGNALS_PORT"):
+        out["signals_port"] = env["OFFGRID_SIGNALS_PORT"]
+    if env.get("OFFGRID_SIGNAL_TIMEOUT"):
+        try:
+            out["signals_timeout"] = float(env["OFFGRID_SIGNAL_TIMEOUT"])
+        except ValueError:
+            pass
+    if env.get("OFFGRID_SIGNALS_AUDIT"):
+        out["signals_audit"] = env["OFFGRID_SIGNALS_AUDIT"]
     if env.get("OFFGRID_COUNCIL_MEMBERS"):
         out["council_members"] = tuple(
             part.strip() for part in env["OFFGRID_COUNCIL_MEMBERS"].split(",") if part.strip()

@@ -67,11 +67,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Select-String", readme)
         self.assertIn("throw 'SHA-256 mismatch'", readme)
 
-    def test_the_website_links_that_exact_asset(self):
+    def test_the_website_links_the_archive_it_serves(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
-        linked = re.findall(r'releases/latest/download/([^"]+)"', page)
-        self.assertTrue(linked, "the download button should point at a release asset")
-        self.assertEqual(set(linked), {ASSET})
+        self.assertIn(f'href="/{ASSET}"', page)
+        self.assertTrue((ROOT / "public" / ASSET).is_file(), ASSET)
+        self.assertTrue((ROOT / "public" / "SHA256SUMS").is_file(), "SHA256SUMS")
 
     def test_the_version_is_declared_once(self):
         pyproject = PYPROJECT.read_text(encoding="utf-8")
@@ -94,14 +94,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.workflow.index("offgrid.cli distribute"),
         )
 
-    def test_the_site_no_longer_builds_its_own_archive(self):
-        # One download, one source of truth: the site links the release asset
-        # and only reads its checksum, never serves an archive of its own.
+    def test_the_site_serves_the_archive_it_links(self):
+        # The download must keep working even when the GitHub release is stale
+        # or rate-limited. The digest is read from the same public asset.
         worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
         deploy = (ROOT / "deploy.json").read_text(encoding="utf-8")
         self.assertNotIn("site-archive", worker + deploy)
-        self.assertNotIn(f"/download/{ASSET}", worker)
-        self.assertFalse((ROOT / "site-archive.js").exists())
+        self.assertIn("/SHA256SUMS", worker)
+        self.assertIn("env.ASSETS", worker)
+        self.assertTrue((ROOT / "public" / ASSET).is_file())
 
     def test_the_website_shows_the_digest_of_the_file_it_serves(self):
         # Read from the release at request time, so the page cannot show a
@@ -116,9 +117,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_the_digest_can_be_copied_without_selecting_it(self):
         page = (ROOT / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "public" / "copy.js").read_text(encoding="utf-8")
+        minified = (ROOT / "public" / "copy.min.js").read_text(encoding="utf-8")
         worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
         self.assertIn("data-copy-digest", page)
-        self.assertIn('src="/copy.js"', page)
+        self.assertIn('/styles.min.css', page)
+        self.assertIn('src="/copy.min.js" defer fetchpriority="low"', page)
+        self.assertLess(page.index("copy.min.js"), page.index("</head>"))
+        self.assertLess(len(minified), len(script))
+        for marker in ("navigator.clipboard.writeText", "selectNodeContents", "[0-9a-f]{64}"):
+            self.assertIn(marker, minified)
         self.assertIn("navigator.clipboard.writeText", script)
         # Only that one same-origin file may run, and never inline code.
         self.assertIn("script-src 'self'", worker)
@@ -128,11 +135,29 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # The button must not offer to copy the "see SHA256SUMS" fallback.
         self.assertIn("[0-9a-f]{64}", script)
         self.assertIn("data-release-digest", worker)
-        self.assertIn("releases/latest/download", worker)
+        self.assertIn("DIGEST_ASSET", worker)
+        self.assertIn("env.ASSETS", worker)
         self.assertIn("/SHA256SUMS", worker)
         self.assertIn("AbortSignal.timeout", worker)
         # The injection has to happen before the page is returned.
-        self.assertLess(worker.index("releaseDigest()"), worker.index("withDigest(page"))
+        self.assertLess(worker.index("releaseDigest(env, url)"), worker.index("withDigest(page"))
+
+    def test_the_site_uses_the_cloudflare_edge_cache(self):
+        worker = (ROOT / "site-worker.js").read_text(encoding="utf-8")
+        self.assertIn("globalThis.caches?.default", worker)
+        self.assertIn("cache.match(cacheKey)", worker)
+        self.assertIn("cache.put(cacheKey", worker)
+        self.assertIn("ctx.waitUntil", worker)
+        self.assertIn("cdn-cache-control", worker)
+        # A failed digest lookup must not become the five-minute cached page.
+        self.assertIn("if (digest && cache && ctx?.waitUntil)", worker)
+        self.assertIn('headers.set("cache-control", "no-store")', worker)
+        self.assertIn("CACHE_VERSION", worker)
+        self.assertIn("EDGE_CACHE_SECONDS = 300", worker)
+        self.assertIn("let digestCache", worker)
+        self.assertIn("digestCache.expires", worker)
+        # A cache failure must not stop the page from rendering.
+        self.assertIn("A cache miss must never stop the page", worker)
 
 
 if __name__ == "__main__":

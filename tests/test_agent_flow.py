@@ -179,6 +179,61 @@ class HappyPathTests(Harness):
         self.assertEqual(result.runs[0].agent, "coder")
         self.assertTrue((self.root / "z.py").exists())
 
+    def test_a_custom_agent_can_take_a_plan_step(self):
+        roster = self.root / ".offgrid" / "agents.json"
+        roster.parent.mkdir(parents=True)
+        roster.write_text(
+            json.dumps(
+                {
+                    "agents": [
+                        {
+                            "key": "security",
+                            "title": "who audits the change",
+                            "prompt": "You are security. Read the change and report.",
+                            "tools": ["read_file", "git_diff", "finish"],
+                            "max_turns": 4,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        plan = {
+            "summary": "audit hello.py",
+            "steps": [
+                {
+                    "id": 1,
+                    "title": "audit",
+                    "agent": "security",
+                    "task": "Read hello.py and report",
+                    "files": ["hello.py"],
+                    "depends_on": [],
+                }
+            ],
+            "verify": "",
+        }
+        team = self.team(
+            [
+                when("planner", text(json.dumps(plan))),
+                when("security", text("hello.py is clean")),
+                when("lead", text("audited")),
+            ]
+        )
+        result = team.run("audit hello.py")
+
+        self.assertEqual(result.runs[0].agent, "security")
+        self.assertEqual(result.runs[0].summary, "hello.py is clean")
+        planner_prompts = [
+            message["content"]
+            for request in self.model.requests
+            for message in request.get("messages") or []
+            if message.get("role") == "user"
+            and "TASK FROM THE USER" in (message.get("content") or "")
+        ]
+        self.assertTrue(planner_prompts)
+        self.assertIn("AVAILABLE CUSTOM AGENTS", planner_prompts[0])
+        self.assertIn("- security:", planner_prompts[0])
+
 
 class ReviewLoopTests(Harness):
     def test_reviewer_requests_changes_then_approves(self):

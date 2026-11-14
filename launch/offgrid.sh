@@ -1,9 +1,9 @@
 #!/bin/sh
 # OffGrid launcher (Linux / macOS).
 #
-# Starts the bundled model server if it is not already running, waits for it to
-# answer, then hands over to the agent. Works with a bundled portable python or
-# the system one, whichever exists first.
+# With no arguments it opens the one-click setup in the browser. Explicit
+# commands still get the bundled model server started first. Works with a
+# private or system Python, whichever exists first.
 
 set -u
 
@@ -13,6 +13,7 @@ PORT="${OFFGRID_PORT:-8089}"
 BASE="http://127.0.0.1:$PORT/v1"
 
 # ---- python ---------------------------------------------------------------
+PY=""
 if [ -x "$ROOT/runtime/python/bin/python3" ]; then
   PY="$ROOT/runtime/python/bin/python3"
 elif [ -x "$ROOT/runtime/python/python.exe" ]; then
@@ -21,8 +22,34 @@ elif command -v python3 >/dev/null 2>&1; then
   PY=$(command -v python3)
 elif command -v python >/dev/null 2>&1; then
   PY=$(command -v python)
-else
-  echo "OffGrid: no python found. Bundle one with scripts/setup_usb.py" >&2
+fi
+
+# Removing the Python-install step is the difference between "works" and
+# "double-click does nothing" for most people. The runtime stays in this folder.
+if [ -z "$PY" ]; then
+  if [ -f "$HERE/bootstrap.sh" ]; then
+    if ! sh "$HERE/bootstrap.sh"; then
+      echo "OffGrid: setup could not install its private Python runtime." >&2
+      exit 1
+    fi
+    if [ -x "$ROOT/runtime/python/bin/python3" ]; then
+      PY="$ROOT/runtime/python/bin/python3"
+    fi
+  fi
+fi
+
+if [ -n "$PY" ] && ! "$PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+  # An old system Python is worse than no Python: setup would fail later with
+  # a syntax error. Use the private runtime instead, exactly as if none existed.
+  PY=""
+  if [ -f "$HERE/bootstrap.sh" ] && sh "$HERE/bootstrap.sh" && [ -x "$ROOT/runtime/python/bin/python3" ]; then
+    PY="$ROOT/runtime/python/bin/python3"
+  fi
+fi
+
+if [ -z "$PY" ]; then
+  echo "OffGrid: setup could not find or install a compatible Python runtime." >&2
+  echo "Check the internet connection and run this again." >&2
   exit 1
 fi
 
@@ -42,6 +69,17 @@ PYEOF
 mkdir -p "$ROOT/logs" "$ROOT/run"
 
 # ---- model server ---------------------------------------------------------
+# The setup command starts and owns the model server itself. Starting a second
+# copy here would make a double-click wait for the same model twice (and leave
+# an orphan process when the setup window closes).
+if [ "$#" -eq 0 ]; then
+  exec "$PY" -m offgrid easy
+fi
+if [ "${1:-}" = "easy" ]; then
+  shift
+  exec "$PY" -m offgrid easy "$@"
+fi
+
 MODEL=$(find "$ROOT/models" -maxdepth 1 -name '*.gguf' 2>/dev/null | head -n 1)
 SERVER=""
 for candidate in "$ROOT/runtime/llama/llama-server" "$ROOT/runtime/llama/build/bin/llama-server"; do
@@ -55,7 +93,7 @@ if [ -n "$MODEL" ] && [ -x "$SERVER" ] && [ -z "${OFFGRID_NO_SERVER:-}" ]; then
   if ! probe; then
     echo "OffGrid: loading $(basename "$MODEL") on port $PORT (first token takes a moment)..."
     "$SERVER" -m "$MODEL" --host 127.0.0.1 --port "$PORT" \
-      -c "${OFFGRID_CONTEXT:-8192}" --jinja -t "${OFFGRID_THREADS:-0}" \
+      -c "${OFFGRID_CONTEXT:-8192}" --jinja \
       >>"$ROOT/logs/llama.log" 2>&1 &
     echo $! > "$ROOT/run/llama.pid"
     waited=0
@@ -73,10 +111,4 @@ if [ -n "$MODEL" ] && [ -x "$SERVER" ] && [ -z "${OFFGRID_NO_SERVER:-}" ]; then
 fi
 
 # ---- the agent ------------------------------------------------------------
-# A double-click has no arguments. Start the interactive session rather than
-# printing the command list.
-if [ "$#" -eq 0 ]; then
-  set -- chat
-fi
-
 exec "$PY" -m offgrid "$@"

@@ -1,6 +1,6 @@
 @echo off
 rem Clear Windows launcher at the top of an OffGrid folder.
-rem Double-click this file to start interactive chat. Arguments work like the CLI.
+rem Double-click this file to open the one-click setup in your browser. Arguments work like the CLI.
 title OffGrid
 
 rem Running the .bat straight from a zip viewer extracts only this file, so the

@@ -31,58 +31,76 @@ BUNDLE_PREFIX = f"offgrid-{__version__}"
 PYZ_NAME = "offgrid.pyz"
 DEFAULT_BUNDLE = Path("dist") / f"{BUNDLE_PREFIX}-portable.zip"
 README_FIRST = f"""\
-OffGrid portable bundle
-=======================
+OffGrid — start here
+===================
 
-This folder can be copied to a USB stick or another computer. It needs Python
-3.9 or newer and a local OpenAI-compatible model server, such as Ollama,
-llama.cpp, LM Studio or vLLM. It does not include model weights or a Python
-runtime.
+You do not need to install Python, Ollama or anything else.
 
-Quick start
------------
-  macOS (double-click)   OffGrid.command
-  Windows (double-click) OffGrid.bat
-  Linux                  ./OffGrid.sh
-  Any terminal           python3 offgrid.pyz chat
+1. Extract this whole zip into a normal folder. Do not run it from inside the
+   zip window.
 
-Windows notes
--------------
-Install Python 3.9 or newer from https://www.python.org/downloads/windows/ and
-tick "Add python.exe to PATH" in the installer. The Microsoft Store "python"
-alias is not a working interpreter.
+2. Double-click the right launcher:
 
-If OffGrid.bat opens nothing, run it from a Command Prompt in this folder so
-the message stays visible. If Windows Smart App Control or SmartScreen blocks
-the download, right-click the .zip, open Properties and tick Unblock before
-extracting. Already extracted? Run this once in this folder:
+   Windows   OffGrid.bat
+   macOS     OffGrid.command
+   Linux     OffGrid.sh
 
-  powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Recurse | Unblock-File"
+   (On Linux you can also double-click OffGrid.sh; if your file manager asks,
+   choose "Run" or "Run in Terminal".)
 
-The portable zip runs your installed Python, so it needs no unsigned program.
-The larger USB bundle also carries runtime\\python\\python.exe and
-llama-server.exe, which Smart App Control may refuse; use the portable zip on
-those machines.
+3. Your browser opens an OffGrid page. Click the big "Set up OffGrid" button
+   and leave the black window open while it downloads.
 
-The top-level launchers start interactive chat. The launch/ scripts are the
-same entry points for terminals and scripts. The single-file app is offgrid.pyz;
-the source tree is here if you want to read, test or change it. Both need an
-existing Python 3.9+ and a local model server.
+That is the whole setup. The first run needs an internet connection.
 
-Put a shortcut on the desktop (Windows: OffGrid.bat desktop install):
+What happens on the first run
+-----------------------------
+OffGrid downloads three things into its own folder:
 
-  ./OffGrid.sh desktop install
+  * a private Python runtime (about 65 MB), only if your computer does not
+    already have a compatible Python;
+  * a small local AI engine (about 20 MB);
+  * the starter model, Qwen2.5-Coder 3B (about 2 GB).
 
-A completely offline bundle, including a portable Python, llama.cpp and the
-model file, is a separate and much larger build:
+Nothing is installed system-wide. No account, API key or cloud service is
+needed. The model stays in the models folder and works fully offline after
+setup. You can move the whole OffGrid folder to another drive or computer.
+
+After that, OffGrid opens its Studio chat page. Use the buttons and text box;
+there are no commands to memorise.
+
+If something goes wrong
+-----------------------
+* Keep the black window open. It contains the full error if the browser page
+  cannot explain something.
+* If the browser does not open, copy the local address printed in that window
+  into your browser.
+* If Windows says "Windows protected your PC", click More info, then Run
+  anyway. The launchers are not code-signed. If SmartScreen blocks the zip,
+  right-click it, choose Properties, tick Unblock, then extract again.
+* On macOS, if Gatekeeper refuses it, right-click OffGrid.command, choose Open,
+  then Open again. You only need to do that once.
+* Interrupted? Click "Try again" or run the launcher again. Completed
+  downloads are kept.
+
+If you already use Ollama or LM Studio
+--------------------------------------
+Start it before OffGrid. Setup finds it automatically and skips the model
+download.
+
+Advanced / terminal use
+-----------------------
+The launch/ scripts are the same entry points used by the top-level launchers.
+The single-file app is offgrid.pyz. Useful commands:
+
+  ./OffGrid.sh doctor
+  ./OffGrid.sh studio
+  ./OffGrid.sh chat
+
+A larger, completely offline USB bundle (portable Python, llama.cpp and the
+model) can be built with:
 
   python3 scripts/setup_usb.py --target /media/USB/offgrid --model 7b
-
-Install or copy it to a mounted device from the app itself:
-
-  python3 offgrid.pyz distribute --list
-  python3 offgrid.pyz distribute --check-drive /media/USB --bundle dist/offgrid-portable.zip
-  python3 offgrid.pyz distribute --to /media/USB
 
 OffGrid never writes to a raw block device. Install to the mounted filesystem,
 then unmount it normally.
@@ -478,7 +496,7 @@ def _verify_model_stream(name: str, handle) -> None:
     if not expected:
         raise PortableError(
             f"cannot verify {Path(name).name}: no pinned SHA-256 for that model; "
-            "use a bundled 3b/7b/14b/35b/80b model or remove it"
+            "use a bundled 3b/7b/12b/14b/35b/80b model or remove it"
         )
     actual = _hash_stream(handle)
     if actual.lower() != expected.lower():

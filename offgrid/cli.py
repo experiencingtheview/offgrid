@@ -15,11 +15,11 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__
 from .agents import describe_roster
-from .config import CANDIDATE_ENDPOINTS, Config, load_config
+from .config import Config, load_config
 from .effort import resolve as resolve_effort
 from .hardware import probe, recommend
 from .scale import adjust as adjust_effort, capacity_for, describe as describe_capacity
-from .orchestrator import RunResult, Team
+from .orchestrator import Team
 from .providers import LocalProvider, ProviderError, discover, open_provider
 from .self_improve import IdleWatcher, ImproveError, ImprovementTerminal, SelfImprover
 from .session import SessionLog
@@ -36,8 +36,14 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid setup                                     guided first run: model, checks, shortcut
   offgrid models                                    list models on the server
   offgrid agents                                    show the team roster
+  offgrid devices [list|read|set|diagnose]            sensors, gauges, lights and relays
+  offgrid signals [status|info|read|scan|ir-send]     Flipper Zero signals, read-only except IR send
+  offgrid easy                                      one-click setup in your browser (start here)
+  offgrid studio                                    the team in one local browser app
   offgrid memory [list|search|add|forget|review|reject|forgive|rejected] what it remembers
   offgrid library [list|search|verify|index]        offline reference library
+  offgrid images [compress]                         lossless PNG / JPEG metadata optimization
+  offgrid research "topic" --online                 deep research, human-approved offline saves
   offgrid council [members|ping|ask]                 independent advisors
   offgrid hardware                                   what this machine can do
   offgrid fleet [list|add|remove|ping|scan|serve]    use your other devices' power
@@ -77,11 +83,43 @@ can prepare pending requests without a chat session.
 # --------------------------------------------------------------------------
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--endpoint", help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8080/v1")
+    parser.add_argument(
+        "--endpoints",
+        action="append",
+        default=[],
+        metavar="URL[,URL...]",
+        help="balance model calls across these OpenAI-compatible base URLs (round-robin)",
+    )
     parser.add_argument("--model", help="model name to request (default: first the server reports)")
     parser.add_argument("--workspace", default=".", help="project directory to work in (default: .)")
     parser.add_argument("--auto", action="store_true", help="run shell commands without asking (still blocks the dangerous ones)")
     parser.add_argument("--no-shell", action="store_true", help="forbid the agents from running any shell command")
     parser.add_argument("--offline", action="store_true", help="hard offline: refuse network tools and package installs")
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help="allow online deep research from open-licensed sources (off by default)",
+    )
+    parser.add_argument(
+        "--research-timeout",
+        type=float,
+        help="seconds to wait for a research source (default: 20)",
+    )
+    parser.add_argument(
+        "--research-cache",
+        default="",
+        help="private research API cache (default: .offgrid/research-cache)",
+    )
+    parser.add_argument(
+        "--research-cache-ttl",
+        type=float,
+        help="seconds a cached API response stays fresh (default: 3600; 0 disables)",
+    )
+    parser.add_argument(
+        "--refresh-research",
+        action="store_true",
+        help="ignore cached research responses and fetch fresh ones",
+    )
     parser.add_argument("--allow-remote", action="store_true", help="allow a model endpoint that is not on localhost")
     parser.add_argument("--parallel", type=int, help="run independent plan steps concurrently (default 1)")
     parser.add_argument(
@@ -113,6 +151,41 @@ def add_common(parser: argparse.ArgumentParser) -> None:
         help="do not consult the council automatically when an agent admits ignorance",
     )
     parser.add_argument("--library-dir", default="", help="offline library folder (default: ./offgrid-library)")
+    parser.add_argument(
+        "--devices-file",
+        default="",
+        help="device registry (default: .offgrid/devices.json)",
+    )
+    parser.add_argument(
+        "--device-policy",
+        choices=["read-only", "ask", "auto"],
+        help="override the registry's write policy",
+    )
+    parser.add_argument(
+        "--device-timeout",
+        type=float,
+        help="seconds to wait for a device (default: 5)",
+    )
+    parser.add_argument(
+        "--allow-dangerous-devices",
+        action="store_true",
+        help="allow writes to points marked dangerous (locks, covers, heaters); fit physical interlocks first",
+    )
+    parser.add_argument(
+        "--signal-policy",
+        choices=["read-only", "ask", "auto"],
+        help="Flipper signal policy (default: read-only; only IR transmit is a write)",
+    )
+    parser.add_argument(
+        "--signals-port",
+        default="",
+        help="Flipper serial port (default: auto-detect USB serial)",
+    )
+    parser.add_argument(
+        "--signal-timeout",
+        type=float,
+        help="seconds to wait for a signal operation (default: 8)",
+    )
     parser.add_argument(
         "--fleet",
         action="store_true",
@@ -241,6 +314,74 @@ def build_parser() -> argparse.ArgumentParser:
     agents = subparsers.add_parser("agents", help="show the team roster")
     add_common(agents)
 
+    devices = subparsers.add_parser(
+        "devices", help="read, diagnose or control local sensors, lights and relays"
+    )
+    devices.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "read", "set", "diagnose"],
+    )
+    devices.add_argument("device", nargs="?", default="", help="device name")
+    devices.add_argument("point", nargs="?", default="", help="point name")
+    devices.add_argument("value", nargs="?", default="", help="new value for set")
+    devices.add_argument(
+        "--yes", action="store_true", help="approve a write without the interactive prompt"
+    )
+    devices.add_argument("--json", action="store_true", help="machine-readable output")
+    add_common(devices)
+
+    signals = subparsers.add_parser(
+        "signals", help="use a connected Flipper Zero for read-only signals and authorized IR"
+    )
+    signals.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "info", "read", "scan", "ir-send"],
+    )
+    signals.add_argument("target", nargs="?", default="", help="read kind, frequency, or IR protocol")
+    signals.add_argument("address", nargs="?", default="", help="IR hexadecimal address")
+    signals.add_argument("ir_command", nargs="?", default="", help="IR hexadecimal command")
+    signals.add_argument("--seconds", type=float, default=8, help="receive/read window (1-30s)")
+    signals.add_argument("--yes", action="store_true", help="approve an IR transmission without prompting")
+    signals.add_argument("--json", action="store_true", help="machine-readable output")
+    add_common(signals)
+
+    easy = subparsers.add_parser(
+        "easy", help="one-click setup and browser app for first-time users"
+    )
+    easy.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (default: 127.0.0.1)",
+    )
+    easy.add_argument("--port", type=int, default=8099, help="setup page port (default: 8099)")
+    easy.add_argument(
+        "--no-open", action="store_true", help="do not open the browser automatically"
+    )
+    add_common(easy)
+
+    studio = subparsers.add_parser(
+        "studio", help="browser app: chat with the team in one local page"
+    )
+    studio.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (default: 127.0.0.1; use 0.0.0.0 only with --access-key)",
+    )
+    studio.add_argument("--port", type=int, default=8099, help="port (default: 8099)")
+    studio.add_argument(
+        "--access-key",
+        default="",
+        help="require this key for the API; also read from OFFGRID_STUDIO_KEY",
+    )
+    studio.add_argument(
+        "--no-open", action="store_true", help="do not open the browser automatically"
+    )
+    add_common(studio)
+
     memory = subparsers.add_parser("memory", help="inspect or edit long-term memory")
     memory.add_argument(
         "action",
@@ -281,6 +422,55 @@ def build_parser() -> argparse.ArgumentParser:
     library.add_argument("action", nargs="?", default="list", choices=["list", "search", "verify", "index"])
     library.add_argument("terms", nargs="*")
     add_common(library)
+
+    images = subparsers.add_parser(
+        "images", help="losslessly recompress PNGs and strip JPEG metadata"
+    )
+    images.add_argument(
+        "action",
+        nargs="?",
+        default="compress",
+        help="optional 'compress' verb; plain paths are accepted too",
+    )
+    images.add_argument("paths", nargs="*", help="image files or directories inside the workspace")
+    images.add_argument(
+        "--in-place",
+        action="store_true",
+        help="replace source images atomically instead of writing .compressed copies",
+    )
+    images.add_argument(
+        "--output",
+        default="",
+        help="write optimized copies below this directory (never overwrites files)",
+    )
+    images.add_argument(
+        "--strip-metadata",
+        action="store_true",
+        help="JPEG only: remove APPn/COM metadata, including EXIF orientation",
+    )
+    images.add_argument("--json", action="store_true", help="machine-readable result")
+    add_common(images)
+
+    research = subparsers.add_parser(
+        "research", help="deep research from open-licensed sources, with human-approved offline saves"
+    )
+    research.add_argument("query", nargs="*", help="topic or question to research")
+    research.add_argument("--limit", type=int, default=6, help="maximum sources to fetch (1-8)")
+    research.add_argument(
+        "--source",
+        action="append",
+        choices=["wikipedia", "wikibooks", "wikiversity"],
+        help="limit to one open-licensed source; repeat for several",
+    )
+    research.add_argument(
+        "--save",
+        nargs="+",
+        default=[],
+        help="explicitly save these result numbers or ids (no prompt)",
+    )
+    research.add_argument("--category", default="research", help="library category (default: research)")
+    research.add_argument("--json", action="store_true", help="machine-readable report")
+    add_common(research)
 
     council = subparsers.add_parser("council", help="inspect or query the council of advisors")
     council.add_argument("action", nargs="?", default="members", choices=["members", "ping", "ask"])
@@ -643,6 +833,16 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     if getattr(args, "endpoint", None):
         out["endpoint"] = args.endpoint
+    if getattr(args, "endpoints", None):
+        endpoints = []
+        for chunk in args.endpoints:
+            endpoints.extend(
+                part.strip().rstrip("/")
+                for part in str(chunk).split(",")
+                if part.strip()
+            )
+        if endpoints:
+            out["endpoints"] = tuple(dict.fromkeys(endpoints))
     if getattr(args, "model", None):
         out["model"] = args.model
     if getattr(args, "workspace", None):
@@ -654,6 +854,16 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
     if getattr(args, "offline", False):
         out["offline"] = True
         out["network"] = "deny"
+    if getattr(args, "online", False):
+        out["research_online"] = True
+    if getattr(args, "research_timeout", None) is not None:
+        out["research_timeout"] = max(5.0, min(float(args.research_timeout), 60.0))
+    if getattr(args, "research_cache", ""):
+        out["research_cache"] = args.research_cache
+    if getattr(args, "research_cache_ttl", None) is not None:
+        out["research_cache_ttl"] = max(0.0, min(float(args.research_cache_ttl), 604800.0))
+    if getattr(args, "refresh_research", False):
+        out["research_refresh"] = True
     if getattr(args, "allow_remote", False):
         out["allow_remote"] = True
     if getattr(args, "parallel", None) is not None:
@@ -693,6 +903,20 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
         out["council_auto"] = False
     if getattr(args, "library_dir", ""):
         out["library_dir"] = args.library_dir
+    if getattr(args, "devices_file", ""):
+        out["devices_file"] = args.devices_file
+    if getattr(args, "device_policy", None):
+        out["device_policy"] = args.device_policy
+    if getattr(args, "device_timeout", None) is not None:
+        out["device_timeout"] = max(1.0, min(float(args.device_timeout), 30.0))
+    if getattr(args, "allow_dangerous_devices", False):
+        out["allow_dangerous_devices"] = True
+    if getattr(args, "signal_policy", None):
+        out["signals_policy"] = args.signal_policy
+    if getattr(args, "signals_port", ""):
+        out["signals_port"] = args.signals_port
+    if getattr(args, "signal_timeout", None) is not None:
+        out["signals_timeout"] = max(1.0, min(float(args.signal_timeout), 30.0))
     if getattr(args, "fleet", False):
         out["fleet"] = True
     if getattr(args, "fleet_exec", False):
@@ -748,7 +972,11 @@ def connect(config: Config, ui: UI, hint: bool = True) -> Optional[LocalProvider
         if hint:
             _no_server_hint(ui)
         return None
-    ui.info(f"connected: {config.resolved_endpoint()} · model {provider.model}")
+    ui.info(
+        f"connected: {getattr(provider, 'label', provider.endpoint)} · model {provider.model}"
+    )
+    if getattr(provider, "label", ""):
+        ui.info(f"balance: {message}")
 
     if config.fleet:
         from .fleet import Fleet, FleetProvider
@@ -882,7 +1110,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     session = SessionLog(workspace.root, config.session_dir)
     team = Team(provider, workspace, config, ui, **build_services(config, workspace))
     if not as_json:
-        ui.banner(task, provider.model, config.resolved_endpoint())
+        ui.banner(task, provider.model, getattr(provider, "label", provider.endpoint))
         ui.info(f"effort: {team.effort.name} - {team.effort.description}")
         if team.capability is not None and team.capacity is not None:
             ui.info(
@@ -1269,7 +1497,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ui.info(output[:2000] if output else "nothing to verify")
                 continue
             if command == "agents":
-                print(describe_roster())
+                print(describe_roster(team.custom_agents))
                 continue
             if command == "status":
                 print(config.describe())
@@ -1337,9 +1565,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     fleet = Fleet(config).load()
     live = fleet.available(limit=9, timeout=1) if fleet.peers else []
-    found = discover(config)
+    configured_endpoints = config.resolved_endpoints()
+    found = discover(config, configured_endpoints) if config.endpoints else discover(config)
+    found_endpoints = {endpoint for endpoint, _names in found}
     endpoint_answering = bool(
-        config.endpoint and any(endpoint == config.endpoint for endpoint, _ in found)
+        (config.endpoint or config.endpoints)
+        and any(endpoint in found_endpoints for endpoint in configured_endpoints)
     )
     workspace_config = (workspace.root / ".offgrid.json").is_file()
     from .semantics import load_lexicon
@@ -1356,7 +1587,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     readiness = primary_module.readiness(
         config, workspace.root, signing_key_path=signing_key_path
     )
-    exit_code = 0 if found or config.endpoint else 1
+    exit_code = 0 if found or (config.endpoint and not config.endpoints) else 1
     if strict_failed:
         exit_code = 1
 
@@ -1369,6 +1600,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "git": git_repo,
             "config": {
                 "endpoint": config.resolved_endpoint(),
+                "endpoints": list(config.resolved_endpoints()),
                 "model": config.model,
                 "parallel": config.parallel,
                 "max_turns": config.max_turns,
@@ -1405,6 +1637,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 for endpoint, names in found
             ],
             "configured_endpoint": config.endpoint,
+            "configured_endpoints": list(config.resolved_endpoints()),
             "configured_endpoint_answering": endpoint_answering,
             "workspace_config": workspace_config,
             "lexicon": {
@@ -1526,11 +1759,137 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .agents import load_custom_agents
+
+    extra, warnings = load_custom_agents(Path(workspace.root) / config.agents_file)
+    for warning in warnings:
+        ui.warn(warning)
     print()
     print("  the team (each one is a separate prompt, tool set and turn budget)")
-    print(describe_roster())
+    print(describe_roster(extra))
+    if extra:
+        print()
+        print(f"  {len(extra)} custom agent(s) from {config.agents_file}")
     print()
     return 0
+
+
+def cmd_devices(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .devices import DeviceError, DeviceManager
+
+    manager = DeviceManager(workspace.root, config, log=ui.info)
+    for warning in manager.warnings:
+        ui.warn(warning)
+    action = (args.action or "list").lower()
+    as_json = bool(getattr(args, "json", False))
+
+    def confirm(message: str) -> bool:
+        if getattr(args, "yes", False):
+            return True
+        if not sys.stdin.isatty():
+            ui.error("this write needs approval; rerun with --yes in a non-interactive shell")
+            return False
+        return ui.ask(f"  {message} [y/N] ").strip().lower() in ("", "y", "yes")
+
+    try:
+        if action == "list":
+            if as_json:
+                print(json.dumps(manager.list_data(), indent=2))
+            else:
+                print(manager.list_text())
+            return 0
+        if action == "read":
+            readings = manager.read(args.device, args.point)
+            if as_json:
+                print(json.dumps([item.as_dict() for item in readings], indent=2))
+            else:
+                print(manager.readings_text(readings))
+            return 0 if all(item.ok for item in readings) else 1
+        if action == "diagnose":
+            report = manager.diagnose(args.device)
+            if as_json:
+                print(json.dumps(report, indent=2))
+            else:
+                print(report["text"])
+            return 0 if report["ok"] else 1
+        if action == "set":
+            if not args.device or not args.point or args.value == "":
+                ui.error("usage: offgrid devices set DEVICE POINT VALUE [--yes]")
+                return 2
+            result = manager.set(
+                args.device,
+                args.point,
+                args.value,
+                source="cli",
+                confirm=confirm,
+            )
+            if as_json:
+                print(json.dumps(result.as_dict(), indent=2))
+            else:
+                print(result.text())
+            return 0 if result.ok else 1
+        ui.error(f"unknown device action {action!r}")
+        return 2
+    except DeviceError as exc:
+        ui.error(str(exc))
+        return 1
+    finally:
+        manager.close()
+
+
+def cmd_signals(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .signals import SignalBridge
+
+    bridge = SignalBridge(workspace.root, config, log=ui.info)
+    action = (args.action or "status").lower()
+    as_json = bool(getattr(args, "json", False))
+
+    def confirm(message: str) -> bool:
+        if getattr(args, "yes", False):
+            return True
+        if not sys.stdin.isatty():
+            ui.error("this IR transmission needs approval; rerun with --yes in a non-interactive shell")
+            return False
+        return ui.ask(f"  {message} [y/N] ").strip().lower() in ("", "y", "yes")
+
+    if action == "status":
+        if as_json:
+            print(json.dumps(bridge.status_data(), indent=2))
+        else:
+            print(bridge.status_text())
+        return 0
+    if action == "info":
+        result = bridge.info()
+    elif action == "read":
+        result = bridge.read(args.target, args.seconds)
+    elif action == "scan":
+        try:
+            frequency = int(args.target)
+        except (TypeError, ValueError):
+            ui.error("usage: offgrid signals scan FREQUENCY_HZ [--seconds N]")
+            return 2
+        result = bridge.scan_subghz(frequency, args.seconds)
+    elif action == "ir-send":
+        if not args.target or not args.address or not args.ir_command:
+            ui.error("usage: offgrid signals ir-send PROTOCOL ADDRESS COMMAND [--yes]")
+            return 2
+        result = bridge.send_ir(
+            args.target,
+            args.address,
+            args.ir_command,
+            confirm=confirm,
+        )
+    else:
+        ui.error(f"unknown signal action {action!r}")
+        return 2
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        print(result.text or result.detail or "(no output)")
+    return 0 if result.ok else 1
 
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -1805,6 +2164,73 @@ def cmd_library(args: argparse.Namespace) -> int:
     print()
     print("  download: python3 scripts/fetch_library.py --get survival coding")
     return 0
+
+
+def cmd_images(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .imagecli import run_images
+
+    return run_images(args, ui, workspace)
+
+
+def cmd_research(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    from .research import ResearchError, ResearchService
+
+    query = " ".join(getattr(args, "query", []) or []).strip()
+    if not query:
+        ui.error("research what? give a topic, e.g. offgrid research \"solar panel maintenance\" --online")
+        return 2
+    if not config.research_online:
+        ui.error("online research is disabled; pass --online (or set research_online in the config)")
+        return 2
+    service = ResearchService(workspace.root, config, log=ui.info)
+    try:
+        report = service.investigate(query, limit=args.limit, source_ids=args.source)
+    except ResearchError as exc:
+        ui.error(str(exc))
+        return 2
+    if not report.items:
+        if getattr(args, "json", False):
+            print(json.dumps(report.as_dict(), indent=2))
+        else:
+            print(report.render())
+        return 1
+
+    if getattr(args, "json", False) and not args.save:
+        print(json.dumps(report.as_dict(), indent=2))
+        return 0
+
+    if not getattr(args, "json", False):
+        print(report.render())
+
+    selected = list(getattr(args, "save", []) or [])
+    if not selected:
+        if not sys.stdin.isatty():
+            ui.info("nothing saved; rerun with --save 1 3 or --save <id> to choose offline copies")
+            return 0
+        print()
+        answer = ui.ask("  save which? [a]ll / [n]one / numbers or ids: ").strip()
+        if answer.lower() in ("", "n", "none", "no", "/quit"):
+            ui.info("nothing saved")
+            return 0
+        selected = [answer]
+
+    result = service.save(
+        report,
+        selected,
+        confirm=lambda _message: True,
+        category=args.category,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps({"report": report.as_dict(), "save": result.as_dict()}, indent=2))
+    else:
+        if result.ok:
+            ui.ok(f"saved {len(result.saved)} research source(s) for offline use")
+            print(result.text())
+        else:
+            ui.error(result.text())
+    return 0 if result.ok else 1
 
 
 def cmd_council(args: argparse.Namespace) -> int:
@@ -2836,7 +3262,7 @@ def _full_bundle_wizard(ui: UI, workspace_root: Optional[Path] = None) -> int:
     if destination.exists():
         ui.error(f"{destination} already exists; choose another folder")
         return 1
-    model = input("  model [7b] (3b/7b/14b/35b/80b): ").strip().lower() or "7b"
+    model = input("  model [7b] (3b/7b/12b/14b/35b/80b): ").strip().lower() or "7b"
     if model not in fullbundle.MODELS:
         ui.error(f"unknown model '{model}'; choose from: {', '.join(fullbundle.MODELS)}")
         return 2
@@ -3077,6 +3503,105 @@ def cmd_distribute(args: argparse.Namespace) -> int:
 
     if args.json:
         print(json.dumps(payload, indent=2))
+    return 0
+
+
+def cmd_easy(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    host = str(getattr(args, "host", "127.0.0.1") or "127.0.0.1")
+    if host.lower() not in ("127.0.0.1", "localhost", "::1"):
+        ui.error("setup must stay on this computer; use 127.0.0.1")
+        return 2
+    try:
+        port = int(getattr(args, "port", 8099))
+    except (TypeError, ValueError):
+        ui.error("port must be a whole number")
+        return 2
+    if not 0 <= port <= 65535:
+        ui.error("port must be between 0 and 65535")
+        return 2
+    config.color = False
+    config.speak = False
+    from .easy import run_easy
+
+    return run_easy(
+        config,
+        workspace.root,
+        host=host,
+        port=port,
+        open_browser=not bool(getattr(args, "no_open", False)),
+    )
+
+
+def cmd_studio(args: argparse.Namespace) -> int:
+    config, ui, workspace = prepare(args)
+    host = str(getattr(args, "host", "127.0.0.1") or "127.0.0.1")
+    access_key = (
+        str(getattr(args, "access_key", "") or "")
+        or str(os.environ.get("OFFGRID_STUDIO_KEY", ""))
+    ).strip()
+    loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
+    if not loopback and not access_key:
+        ui.error(
+            "refusing to bind Studio on a non-loopback interface without --access-key"
+        )
+        return 2
+    try:
+        port = int(getattr(args, "port", 8099))
+    except (TypeError, ValueError):
+        ui.error("port must be a whole number")
+        return 2
+    if not 0 <= port <= 65535:
+        ui.error("port must be between 0 and 65535")
+        return 2
+
+    config.color = False
+    config.speak = False
+    if not getattr(args, "verbose", False) and not getattr(args, "quiet", False):
+        config.verbose = 1
+    ui.color = False
+
+    from .studio import StudioRunner, StudioServer
+
+    runner = StudioRunner(config, workspace)
+    try:
+        server = StudioServer(host, port, runner, api_key=access_key)
+    except OSError as exc:
+        ui.error(f"cannot start Studio on {host}:{port}: {exc}")
+        return 1
+
+    info = runner.info()
+    print()
+    print(ui.paint("  OffGrid Studio", "\033[1m", "\033[35m"))
+    ui.info(f"workspace: {info['workspace']}")
+    ui.info(f"model: {info['model']} @ {info['endpoint']}")
+    ui.info(f"team: {len(info['agents'])} agent(s)")
+    if access_key:
+        from urllib.parse import quote
+
+        print(f"  open: {server.url}?key={quote(access_key, safe='')}")
+    else:
+        print(f"  open: {server.url}")
+    ui.info("Ctrl+C stops Studio; the model server keeps running")
+
+    opened = False
+    if not getattr(args, "no_open", False) and sys.stdin.isatty():
+        try:
+            import webbrowser
+
+            opened = webbrowser.open(server.url)
+        except Exception:
+            opened = False
+    if opened:
+        ui.info("opened the browser")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print()
+        ui.info("stopped Studio")
+    finally:
+        server.stop()
     return 0
 
 
@@ -3568,10 +4093,16 @@ COMMANDS = {
     "setup": cmd_setup,
     "models": cmd_models,
     "agents": cmd_agents,
+    "devices": cmd_devices,
+    "signals": cmd_signals,
+    "easy": cmd_easy,
+    "studio": cmd_studio,
     "config": cmd_config,
     "memory": cmd_memory,
     "lexicon": cmd_lexicon,
     "library": cmd_library,
+    "images": cmd_images,
+    "research": cmd_research,
     "council": cmd_council,
     "hardware": cmd_hardware,
     "fleet": cmd_fleet,

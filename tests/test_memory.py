@@ -4,8 +4,12 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from unittest import mock
 
+import offgrid.memory as memory_module
 from offgrid.memory import MemoryStore, make_key, normalize, tokens
 
 
@@ -25,6 +29,44 @@ class MemoryTests(unittest.TestCase):
         hits = self.memory.recall("verify command project")
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].id, new_id)
+
+    def test_repeated_recall_uses_cache_until_memory_changes(self):
+        self.memory.remember("The verification command is make test", kind="repo")
+        real_match = memory_module.match
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return real_match(*args, **kwargs)
+
+        with mock.patch("offgrid.memory.match", side_effect=counted):
+            first = self.memory.recall("how do I verify")
+            self.assertTrue(first)
+            first_count = len(calls)
+            second = self.memory.recall("how do I verify")
+            self.assertEqual(len(calls), first_count)
+            first[0].score = 999
+            self.assertNotEqual(second[0].score, 999)
+
+            self.memory.remember("Verification also runs make lint", kind="repo")
+            refreshed = self.memory.recall("how do I verify")
+            self.assertGreater(len(calls), first_count)
+            self.assertTrue(any("make lint" in item.text for item in refreshed))
+
+    def test_recall_cache_sees_another_connections_commit(self):
+        self.memory.remember("Verification uses make test", kind="repo")
+        self.assertTrue(self.memory.recall("how do I verify"))
+        other = MemoryStore(self.path)
+        self.addCleanup(other.close)
+        other.remember("Verification also runs make lint", kind="repo")
+        hits = self.memory.recall("how do I verify")
+        self.assertTrue(any("make lint" in item.text for item in hits))
+
+    def test_recall_cache_is_invalidated_when_pending_note_is_accepted(self):
+        ident = self.memory.remember("A pending lesson about widgets", kind="lesson", status="pending")
+        self.assertEqual(self.memory.recall("widgets"), [])
+        self.assertEqual(self.memory.accept([ident]), 1)
+        self.assertTrue(self.memory.recall("widgets"))
 
     def test_recall_matches_meaning_not_wording(self):
         self.memory.remember("Verification command for this project: `make test` (it passed).", kind="repo")
@@ -153,6 +195,31 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.memory.get(new_id).uses, 2)
 
     # -- the review gate -------------------------------------------------
+    def test_bulk_review_operations_are_batched(self):
+        ids = [
+            self.memory.remember(
+                f"pending lesson number {index} about widgets",
+                kind="lesson",
+                status="pending",
+            )
+            for index in range(40)
+        ]
+        statements = []
+        self.memory.set_trace_callback(statements.append)
+        try:
+            self.assertEqual(self.memory.accept(ids[:20]), 20)
+            self.assertEqual(self.memory.reject(ids[20:]), 20)
+            ledger_ids = [item.id for item in self.memory.rejected()]
+            self.assertEqual(self.memory.forgive(ledger_ids), 20)
+        finally:
+            self.memory.set_trace_callback(None)
+
+        sql = [statement.strip().upper() for statement in statements if statement.strip()]
+        selects = sum(statement.startswith("SELECT") for statement in sql)
+        deletes = sum(statement.startswith("DELETE") for statement in sql)
+        self.assertLessEqual(selects, 2)  # one memory lookup, one ledger listing
+        self.assertLessEqual(deletes, 2)  # one reject delete, one forgive delete
+
     def test_pending_notes_influence_nothing(self):
         new_id = self.memory.remember(
             "The staging database password rotates weekly", kind="fact", status="pending"
@@ -314,6 +381,20 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.memory.forgive_matching("quantum chromodynamics"), 0)
         self.assertEqual([item.text for item in self.memory.rejected()], [text])
 
+    def test_rejection_query_cache_invalidates_when_ledger_changes(self):
+        first = self.memory.remember(
+            "Always run pytest before the tests", kind="lesson", status="pending"
+        )
+        self.memory.reject([first])
+        hits = self.memory.rejected(query="pytest")
+        self.assertEqual(len(hits), 1)
+        hits[0].text = "mutated by caller"
+        self.assertEqual(self.memory.rejected(query="pytest")[0].text, "Always run pytest before the tests")
+
+        second = self.memory.remember("Run pytest before committing", kind="lesson")
+        self.memory.reject([second])
+        self.assertEqual(len(self.memory.rejected(query="pytest")), 2)
+
     def test_rejection_ledger_persists(self):
         text = "A rejected lesson about migrations"
         new_id = self.memory.remember(text, kind="lesson", status="pending")
@@ -443,6 +524,57 @@ class MemoryTests(unittest.TestCase):
         legacy_item = migrated.all()[0]
         self.assertEqual(legacy_item.verify_command, "")
         self.assertEqual(legacy_item.evidence_lines(), [])
+
+    def test_connection_pool_reuses_connections_and_allows_parallel_readers(self):
+        self.assertEqual(self.memory._pool.size, memory_module.POOL_SIZE)
+        with self.memory._pool.borrow() as first:
+            self.assertEqual(first.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+        with self.memory._pool.borrow() as second:
+            self.assertIs(first, second)
+
+        barrier = Barrier(2)
+
+        def hold_connection(_):
+            with self.memory._pool.borrow() as db:
+                barrier.wait(timeout=5)
+                return id(db)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            connection_ids = list(pool.map(hold_connection, range(2)))
+        self.assertEqual(len(set(connection_ids)), 2)
+        self.assertGreaterEqual(self.memory._pool.connection_count, 2)
+        self.assertLessEqual(
+            self.memory._pool.connection_count, memory_module.POOL_SIZE
+        )
+
+    def test_query_indexes_exist(self):
+        with self.memory._pool.borrow() as db:
+            memories = {
+                row["name"]
+                for row in db.execute("PRAGMA index_list(memories)").fetchall()
+            }
+        self.assertIn("idx_memory_status_created", memories)
+        self.assertIn("idx_memory_status_kind_created", memories)
+
+    def test_legacy_database_gets_query_indexes_after_migration(self):
+        legacy = Path(self.tmp.name) / "legacy-index.db"
+        db = sqlite3.connect(str(legacy))
+        db.execute(
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+            "text TEXT NOT NULL, key TEXT UNIQUE, source TEXT DEFAULT '', confidence REAL DEFAULT 0.6, "
+            "created REAL NOT NULL, uses INTEGER DEFAULT 0)"
+        )
+        db.commit()
+        db.close()
+        migrated = MemoryStore(legacy)
+        self.addCleanup(migrated.close)
+        with migrated._pool.borrow() as db:
+            names = {
+                row["name"]
+                for row in db.execute("PRAGMA index_list(memories)").fetchall()
+            }
+        self.assertIn("idx_memory_status_created", names)
+        self.assertIn("idx_memory_status_kind_created", names)
 
     def test_helpers(self):
         self.assertIn("deploy", tokens("Deploy the service, now"))

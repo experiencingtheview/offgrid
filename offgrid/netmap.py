@@ -17,7 +17,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 KNOWN_PORTS: Dict[int, str] = {
     22: "ssh",

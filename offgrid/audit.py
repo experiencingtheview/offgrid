@@ -296,15 +296,26 @@ def _check_posture(config: Any) -> List[Finding]:
     if config is None:
         return findings
     endpoint = str(getattr(config, "endpoint", "") or "")
-    if endpoint and getattr(config, "allow_remote", False):
+    configured = bool(endpoint or getattr(config, "endpoints", ()))
+    endpoints = []
+    if configured:
+        resolver = getattr(config, "resolved_endpoints", None)
+        try:
+            endpoints = list(resolver() if callable(resolver) else (endpoint,))
+        except Exception:
+            endpoints = [endpoint]
+    from .providers import is_loopback
+
+    remote = [item for item in endpoints if item and not is_loopback(str(item))]
+    if remote and getattr(config, "allow_remote", False):
         findings.append(
             Finding(
                 severity="medium",
                 check="exposure",
-                message="the model endpoint is allowed to be a non-local host",
+                message="one or more model endpoints are allowed to be non-local hosts",
                 path=".offgrid.json",
-                evidence=endpoint[:60],
-                remediation="keep the endpoint on loopback unless you trust the host",
+                evidence=", ".join(str(item) for item in remote)[:60],
+                remediation="keep model endpoints on loopback unless you trust every host",
             )
         )
     if getattr(config, "allow_public_council", False):

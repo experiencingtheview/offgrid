@@ -13,6 +13,7 @@ from offgrid.config import Config
 from offgrid.memory import MemoryStore
 from offgrid.primary import BACKUP_MANIFEST, continuity_kit
 from tests.fake_llm import serve, text, tool, when
+from tests.test_images import make_png
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -109,6 +110,111 @@ class CliTests(unittest.TestCase):
         for name in ("planner", "coder", "reviewer", "tester", "lead"):
             self.assertIn(name, proc.stdout)
 
+    def test_studio_command_exposes_browser_options(self):
+        proc = self.run_cli("studio", "--help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--access-key", proc.stdout)
+        self.assertIn("--no-open", proc.stdout)
+
+    def test_devices_command_lists_a_registry_and_exposes_safety_flags(self):
+        (self.root / ".offgrid").mkdir()
+        (self.root / ".offgrid" / "devices.json").write_text(
+            json.dumps(
+                {
+                    "policy": "read-only",
+                    "devices": [
+                        {
+                            "name": "cabin",
+                            "adapter": "simulator",
+                            "values": {"battery": 80},
+                            "points": {
+                                "battery": {
+                                    "kind": "gauge",
+                                    "unit": "%",
+                                    "min": 0,
+                                    "max": 100,
+                                }
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        proc = self.run_cli("devices", "list", "--no-color")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("cabin", proc.stdout)
+        self.assertIn("battery", proc.stdout)
+        self.assertIn("read-only", proc.stdout)
+        help_proc = self.run_cli("devices", "--help")
+        self.assertEqual(help_proc.returncode, 0, help_proc.stderr)
+        self.assertIn("--device-policy", help_proc.stdout)
+        self.assertIn("--allow-dangerous-devices", help_proc.stdout)
+
+    def test_images_command_exposes_compression_flags(self):
+        proc = self.run_cli("images", "--help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--in-place", proc.stdout)
+        self.assertIn("--output", proc.stdout)
+        self.assertIn("--strip-metadata", proc.stdout)
+
+    def test_images_command_accepts_a_plain_path_and_writes_a_copy(self):
+        source = self.root / "pic.png"
+        original = make_png()
+        source.write_bytes(original)
+        proc = self.run_cli(
+            "images", "pic.png", "--workspace", str(self.root), "--json", "--no-color"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual(payload["results"][0]["status"], "compressed")
+        self.assertTrue((self.root / "pic.compressed.png").is_file())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_research_command_requires_an_explicit_online_opt_in(self):
+        help_proc = self.run_cli("research", "--help")
+        self.assertEqual(help_proc.returncode, 0, help_proc.stderr)
+        self.assertIn("--online", help_proc.stdout)
+        self.assertIn("--save", help_proc.stdout)
+        self.assertIn("--source", help_proc.stdout)
+        self.assertIn("--research-cache", help_proc.stdout)
+        self.assertIn("--refresh-research", help_proc.stdout)
+        proc = self.run_cli("research", "solar panel", "--no-color")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("online research is disabled", proc.stderr)
+
+    def test_signals_command_exposes_safety_flags(self):
+        proc = self.run_cli("signals", "--help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--signals-port", proc.stdout)
+        self.assertIn("--signal-policy", proc.stdout)
+        self.assertIn("ir-send", proc.stdout)
+        self.assertIn("read-only", proc.stdout)
+
+    def test_agents_command_lists_a_workspace_custom_agent(self):
+        roster = self.root / ".offgrid" / "agents.json"
+        roster.parent.mkdir(parents=True)
+        roster.write_text(
+            json.dumps(
+                {
+                    "agents": [
+                        {
+                            "key": "security",
+                            "title": "who audits the change",
+                            "prompt": "You are security.",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        proc = self.run_cli("agents", "--no-color")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("security", proc.stdout)
+        self.assertIn("(custom)", proc.stdout)
+        self.assertIn("1 custom agent(s)", proc.stdout)
+
     def test_config_command_is_json(self):
         proc = self.run_cli("config", "--no-color")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -133,6 +239,8 @@ class CliTests(unittest.TestCase):
         self.addCleanup(model.stop)
         proc = self.run_cli("doctor", "--endpoint", model.url, "--no-color")
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        balanced = self.run_cli("doctor", "--endpoints", model.url, "--no-color")
+        self.assertEqual(balanced.returncode, 0, balanced.stderr)
         self.assertIn("OffGrid", proc.stdout)
         self.assertIn("continuity-kit", proc.stdout)
         self.assertIn("FAIL", proc.stdout)

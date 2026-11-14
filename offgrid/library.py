@@ -17,10 +17,11 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .querycache import QueryCache
 from .semantics import Lexicon, match, words as meaning_words
 
 UA = "offgrid-library/0.1 (+offline)"
@@ -151,6 +152,27 @@ def _http_text(url: str, timeout: int = 30) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
+def _frontmatter(text: str) -> Dict[str, Any]:
+    """Read the small JSON-valued front matter used by research notes."""
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}
+    values: Dict[str, Any] = {}
+    for line in text[4:end].splitlines():
+        key, separator, raw = line.partition(":")
+        key = key.strip()
+        if not separator or not key:
+            continue
+        value = raw.strip()
+        try:
+            values[key] = json.loads(value)
+        except ValueError:
+            values[key] = value.strip().strip('"')
+    return values
+
+
 def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -213,6 +235,7 @@ class Library:
         self.root = Path(root)
         self._fetch = fetch_text or _http_text
         self.lexicon = lexicon
+        self._search_cache = QueryCache(max_entries=24)
 
     # -- manifest --------------------------------------------------------
     def entries(self) -> List[LibraryEntry]:
@@ -287,6 +310,29 @@ class Library:
             return False, f"{type(exc).__name__}: {exc}"
 
     # -- index -----------------------------------------------------------
+    def save_text(self, relative: str, text: str, overwrite: bool = False) -> Path:
+        """Atomically add a text document inside the library root."""
+        rel = Path(str(relative or ""))
+        if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"invalid library path: {relative!r}")
+        target = (self.root / rel).resolve()
+        try:
+            target.relative_to(self.root.resolve())
+        except ValueError:
+            raise ValueError(f"'{relative}' is outside the library") from None
+        if target == self.index_path().resolve():
+            raise ValueError("index.json is not a library document")
+        if target.suffix.lower() not in TEXT_SUFFIXES:
+            raise ValueError(f"the library saves text files only: {relative}")
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"library document already exists: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".part-tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(target)
+        self.index()
+        return target
+
     def index(self) -> Dict[str, Any]:
         entries: List[Dict[str, Any]] = []
         if self.root.is_dir():
@@ -311,6 +357,8 @@ class Library:
             if entry.category == category and entry.prefix in path.name:
                 matched = entry
                 break
+        meta: Dict[str, Any] = {}
+        body = ""
         info: Dict[str, Any] = {
             "path": rel,
             "category": category,
@@ -323,10 +371,24 @@ class Library:
         if info["searchable"] and path.stat().st_size <= MAX_READ_BYTES:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
+                meta = _frontmatter(text)
+                body = text
+                if text.startswith("---\n"):
+                    end = text.find("\n---\n", 4)
+                    if end >= 0:
+                        body = text[end + 5 :]
                 info["chars"] = len(text)
-                info["head"] = re.sub(r"\s+", " ", text[:1200]).strip()
+                info["head"] = re.sub(r"\s+", " ", body[:1200]).strip()
             except OSError:
                 pass
+        if meta.get("title"):
+            info["title"] = str(meta["title"])
+        if meta.get("license"):
+            info["license"] = str(meta["license"])
+        if meta.get("source_url") or meta.get("source"):
+            info["source"] = str(meta.get("source_url") or meta.get("source"))
+        if meta.get("verification"):
+            info["verified"] = meta["verification"]
         return info
 
     def index_data(self) -> Dict[str, Any]:
@@ -352,23 +414,51 @@ class Library:
         return {"files": len(items), "bytes": total, "categories": categories, "root": str(self.root)}
 
     # -- search ----------------------------------------------------------
+    def _fingerprint(self) -> str:
+        """Cheap snapshot used to invalidate cached searches after edits."""
+        if not self.root.is_dir():
+            return ""
+        digest = hashlib.sha256()
+        for path in sorted(self.root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                rel = str(path.relative_to(self.root))
+            except (OSError, ValueError):
+                continue
+            digest.update(f"{rel}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8"))
+        return digest.hexdigest()
+
     def search(self, query: str, limit: int = 6) -> List[str]:
         """Meaning-first search: concepts and shared wording, not exact keywords.
 
         Ranking uses `semantics.match`, so "how do I make drinking water safe"
         finds a page about boiling and disinfection even though no word matches.
+        Repeated queries reuse a process-local cache until a file changes.
         """
         query = (query or "").strip()
         if not query:
             return []
+        items = self.downloaded()
+        key = (" ".join(query.casefold().split()), int(limit), self._fingerprint())
+        cached = self._search_cache.get(key)
+        if cached is not None:
+            return list(cached)
         results: List[Tuple[float, str]] = []
-        for item in self.downloaded():
+        for item in items:
             path = str(item.get("path") or "")
             title = str(item.get("title") or "")
             head = str(item.get("head") or "")
             body = " ".join(
                 part
-                for part in (title, str(item.get("collection") or ""), path.replace("/", " "), head)
+                for part in (
+                    title,
+                    str(item.get("collection") or ""),
+                    str(item.get("source") or ""),
+                    path.replace("/", " "),
+                    head,
+                )
                 if part
             )
             found = match(query, body, lexicon=self.lexicon)
@@ -386,7 +476,9 @@ class Library:
         for score, citation in self._scan_text(query, limit * 2):
             results.append((score, citation))
         results.sort(key=lambda pair: pair[0], reverse=True)
-        return [text for _score, text in results[:limit]]
+        hits = tuple(text for _score, text in results[:limit])
+        self._search_cache.put(key, hits)
+        return list(hits)
 
     @staticmethod
     def _snippet(text: str, query: str, width: int = 150) -> str:

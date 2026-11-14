@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .config import CANDIDATE_ENDPOINTS, Config
 from .models import Completion, Message, ToolCall
@@ -193,12 +194,150 @@ class LocalProvider:
         )
 
 
+class LoadBalancedProvider:
+    """Round-robin across configured OpenAI-compatible model servers.
+
+    The interface matches ``LocalProvider``. Each call goes to the next
+    endpoint in order; if that endpoint fails, the call tries the others before
+    reporting that every backend is unavailable. This is deliberately simple:
+    it distributes calls and survives a dead server, but does not claim to
+    measure queue depth or latency.
+    """
+
+    def __init__(self, config: Config, endpoints: Optional[Sequence[str]] = None) -> None:
+        raw = endpoints if endpoints is not None else config.endpoints
+        if isinstance(raw, str):
+            raw = (raw,)
+        seen = set()
+        normalized = []
+        for item in raw or ():
+            endpoint = str(item or "").strip().rstrip("/")
+            if endpoint and endpoint not in seen:
+                seen.add(endpoint)
+                normalized.append(endpoint)
+        if not normalized:
+            raise ProviderError("no endpoints configured for load balancing")
+
+        self.config = config
+        self.endpoints = tuple(normalized)
+        self.backends: List[LocalProvider] = []
+        for endpoint in self.endpoints:
+            probe = Config(**config.as_dict())
+            probe.endpoint = endpoint
+            probe.endpoints = ()
+            try:
+                self.backends.append(LocalProvider(probe))
+            except ProviderError as exc:
+                raise ProviderError(f"balanced endpoint {endpoint}: {exc}") from None
+        self.endpoint = self.endpoints[0]
+        self.model = config.model
+        self.native_tools = config.native_tools
+        self._next = 0
+        self._lock = threading.Lock()
+        self.routes: Dict[str, int] = {}
+        self.failures = 0
+
+    @property
+    def label(self) -> str:
+        return f"{len(self.backends)} balanced endpoint(s)"
+
+    def models(self) -> List[str]:
+        names: List[str] = []
+        for backend in self.backends:
+            try:
+                for name in backend.models():
+                    if name not in names:
+                        names.append(name)
+            except ProviderError:
+                continue
+        return names
+
+    def health(self) -> tuple:
+        healthy = []
+        unavailable = 0
+        for backend in self.backends:
+            ok, _message = backend.health()
+            if ok:
+                healthy.append(backend)
+            else:
+                unavailable += 1
+        if not healthy:
+            return False, "no balanced endpoint answered; check the servers and `offgrid doctor`"
+        first = healthy[0]
+        if first.model:
+            self.model = first.model
+        if self.native_tools is None and first.native_tools is not None:
+            self.native_tools = first.native_tools
+        detail = f"{len(healthy)}/{len(self.backends)} endpoint(s) ready"
+        if unavailable:
+            detail += f", {unavailable} unavailable"
+        return True, detail
+
+    def chat(
+        self,
+        messages: Sequence[Message],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_names: Sequence[str] = (),
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Completion:
+        if not self.backends:
+            raise ProviderError("no balanced endpoints are available")
+        count = len(self.backends)
+        with self._lock:
+            start = self._next
+        errors: List[str] = []
+        for offset in range(count):
+            index = (start + offset) % count
+            backend = self.backends[index]
+            try:
+                completion = backend.chat(
+                    messages,
+                    tools=tools,
+                    tool_names=tool_names,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except ProviderError as exc:
+                self.failures += 1
+                errors.append(f"{backend.endpoint}: {exc}")
+                continue
+            with self._lock:
+                self._next = (index + 1) % count
+                self.routes[backend.endpoint] = self.routes.get(backend.endpoint, 0) + 1
+            self.native_tools = backend.native_tools
+            if completion.model:
+                self.model = completion.model
+            return completion
+        raise ProviderError("all balanced endpoints failed: " + "; ".join(errors))
+
+    def _parse(
+        self,
+        data: Dict[str, Any],
+        text_protocol: bool,
+        tool_names: Sequence[str],
+        started: float,
+    ) -> Completion:
+        """Match LocalProvider for FleetProvider's peer-response parsing."""
+        return self.backends[0]._parse(data, text_protocol, tool_names, started)
+
+    def summary(self) -> str:
+        if not self.routes:
+            return ""
+        parts = [f"{count} on {endpoint}" for endpoint, count in sorted(self.routes.items())]
+        text = "balance: " + ", ".join(parts)
+        if self.failures:
+            text += f" ({self.failures} failed attempt(s))"
+        return text
+
+
 def discover(config: Config, candidates: Sequence[str] = CANDIDATE_ENDPOINTS) -> List[tuple]:
     """Probe localhost for a running OpenAI-compatible server."""
     found: List[tuple] = []
     for endpoint in candidates:
         probe = Config(**config.as_dict())
         probe.endpoint = endpoint
+        probe.endpoints = ()
         probe.request_timeout = 2
         try:
             provider = LocalProvider(probe)
@@ -212,8 +351,10 @@ def discover(config: Config, candidates: Sequence[str] = CANDIDATE_ENDPOINTS) ->
     return found
 
 
-def open_provider(config: Config) -> LocalProvider:
+def open_provider(config: Config) -> Union[LocalProvider, LoadBalancedProvider]:
     """Build a provider, autodiscovering a local endpoint if none was given."""
+    if config.endpoints:
+        return LoadBalancedProvider(config)
     if config.endpoint:
         return LocalProvider(config)
     for endpoint, names in discover(config):

@@ -1,5 +1,4 @@
 import io
-import os
 import shutil
 import subprocess
 import sys
@@ -109,6 +108,40 @@ class FullBundleBuilderTests(unittest.TestCase):
             self.assertEqual(code, 0, output.getvalue())
             self.assertIn("Qwen3.6-35B-A3B", output.getvalue())
             self.assertIn("about 20.5 GB", output.getvalue())
+
+    def test_12b_is_a_new_agentic_model_option(self):
+        spec = fullbundle.MODELS["12b"]
+        self.assertEqual(
+            spec["repo"], "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF"
+        )
+        self.assertEqual(
+            spec["file"], "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf"
+        )
+        self.assertEqual(
+            spec["sha256"],
+            "ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755",
+        )
+        self.assertEqual(spec["min_ram_gb"], 15)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "usb"
+            output = StringIO()
+            with redirect_stdout(output), redirect_stderr(StringIO()):
+                code = fullbundle.main(
+                    ["--dry-run", "--target", str(target), "--model", "12b"]
+                )
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertIn("Mellum2.1-12B-A2.5B-Thinking", output.getvalue())
+            self.assertIn("about 8.1 GB", output.getvalue())
+            self.assertIn("16 GB recommended", output.getvalue())
+
+    def test_12b_warns_below_its_15_gb_floor(self):
+        warning = fullbundle.ram_warning("12b", 8)
+        self.assertIn("15 GB", warning)
+        self.assertIn("16 GB recommended", warning)
+        self.assertIn("8.0 GB", warning)
+        self.assertIn("smaller model", warning)
+        self.assertEqual(fullbundle.ram_warning("12b", 15), "")
+        self.assertEqual(fullbundle.ram_warning("12b", 16), "")
 
     def test_80b_is_opt_in_and_carries_a_pinned_hash(self):
         spec = fullbundle.MODELS["80b"]

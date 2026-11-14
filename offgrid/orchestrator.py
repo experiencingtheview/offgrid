@@ -14,15 +14,16 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .agents import AgentSpec, get_agent
+from .agents import AgentSpec, get_agent, load_custom_agents
 from .config import Config
 from .council import CouncilUnavailable, looks_ignorant
 from .effort import override, resolve as resolve_effort
 from .hardware import probe
-from .models import Message, Stats, ToolCall
+from .models import Message, Stats
 from .scale import adjust as adjust_effort, capacity_for
 from .prompt import SKEPTIC
 from .primary import primary_block
@@ -203,6 +204,26 @@ class Team:
         self.memory = memory
         self.library = library
         self.council = council
+        from .devices import DeviceManager
+        from .research import ResearchService
+        from .signals import SignalBridge
+
+        self.devices = DeviceManager(workspace.root, config, log=self.ui.info)
+        for warning in self.devices.warnings:
+            self.ui.warn(warning)
+        self.signals = SignalBridge(workspace.root, config, log=self.ui.info)
+        self.research = ResearchService(
+            workspace.root,
+            config,
+            library=self.library,
+            log=self.ui.info,
+        )
+        self.custom_agents, custom_warnings = load_custom_agents(
+            Path(workspace.root)
+            / getattr(config, "agents_file", ".offgrid/agents.json")
+        )
+        for warning in custom_warnings:
+            self.ui.warn(warning)
         for warning in getattr(memory, "lexicon_warnings", []):
             self.ui.warn(warning)
         self.stats = Stats()
@@ -269,6 +290,22 @@ class Team:
     def _system(self, spec: AgentSpec) -> str:
         """The shared loyalty block, built from this installation's config."""
         return spec.system(self.primary)
+
+    def agent_for(self, key: str) -> AgentSpec:
+        """A built-in role, or a workspace-defined agent with that key."""
+        cleaned = (key or "coder").strip().lower()
+        return self.custom_agents.get(cleaned) or get_agent(cleaned)
+
+    def _custom_roster_note(self) -> str:
+        if not self.custom_agents:
+            return ""
+        lines = [
+            "AVAILABLE CUSTOM AGENTS (assign a step to one only when its description fits)"
+        ]
+        lines.extend(
+            f"- {spec.key}: {spec.title}" for spec in self.custom_agents.values()
+        )
+        return "\n".join(lines)
 
     # -- the agent loop --------------------------------------------------
     def run_agent(
@@ -465,6 +502,10 @@ class Team:
             library=self.library,
             council=self.council,
             fleet=getattr(self.provider, "fleet", None),
+            devices=self.devices,
+            confirm_action=self.ui.confirm_action,
+            signals=self.signals,
+            research=self.research,
         )
 
     # -- context ---------------------------------------------------------
@@ -544,10 +585,12 @@ class Team:
     def plan(self, task: str, briefing: str) -> Tuple[List[Step], str, str]:
         spec = get_agent("planner")
         self.ui.agent(spec.name, "· splitting the task")
+        roster = self._custom_roster_note()
         user = (
             f"TASK FROM THE USER\n{task}\n\n"
             f"{briefing}\n\n"
-            "Take the time you need to get this right. Return the JSON plan now, nothing else."
+            + (roster + "\n\n" if roster else "")
+            + "Take the time you need to get this right. Return the JSON plan now, nothing else."
         )
         candidates = self._draft_plans(task, briefing, user, spec)
         data = self._choose_plan(task, briefing, candidates)
@@ -792,7 +835,7 @@ class Team:
         return waves
 
     def _run_step(self, step: Step, quiet: bool) -> AgentRun:
-        spec = get_agent(step.agent)
+        spec = self.agent_for(step.agent)
         context = self._context_for(step)
         hint = ""
         if step.files:

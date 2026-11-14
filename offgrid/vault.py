@@ -16,14 +16,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
-import os
 import platform
 import shutil
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 MAGIC = b"OFFGRID1"
 TAG_LEN = 32

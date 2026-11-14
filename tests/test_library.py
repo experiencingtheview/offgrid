@@ -115,6 +115,44 @@ class IndexSearchTests(unittest.TestCase):
         self.library.index()
         self.assertEqual(self.library.search("plutonium reactor"), [])
 
+    def test_repeated_search_reuses_the_cache_and_returns_a_fresh_list(self):
+        self.write("survival/water.txt", "boil water for one minute at sea level")
+        self.library.index()
+        calls = []
+        original = self.library._scan_text
+
+        def counted(query, limit):
+            calls.append(query)
+            return original(query, limit)
+
+        self.library._scan_text = counted
+        first = self.library.search("boil water")
+        first.append("caller mutation")
+        second = self.library.search("boil water")
+
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("caller mutation", second)
+        self.assertTrue(any("water.txt" in hit for hit in second))
+
+    def test_search_cache_invalidates_after_the_library_changes(self):
+        self.write("survival/water.txt", "boil water for one minute at sea level")
+        self.library.index()
+        calls = []
+        original = self.library._scan_text
+
+        def counted(query, limit):
+            calls.append(query)
+            return original(query, limit)
+
+        self.library._scan_text = counted
+        self.assertTrue(self.library.search("boil water"))
+        self.write("survival/water-two.txt", "boil water before drinking it")
+        self.library.index()
+        hits = self.library.search("boil water")
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("water-two.txt" in hit for hit in hits))
+
     def test_search_prefers_documents_matching_more_terms(self):
         self.write("one.txt", "boil water for one minute at sea level")
         self.write("two.txt", "boil")
@@ -128,6 +166,15 @@ class IndexSearchTests(unittest.TestCase):
         text = self.library.read("doc.txt", offset=2, limit=1)
         self.assertIn("2| second", text)
         self.assertNotIn("first", text)
+
+    def test_save_text_confines_paths_and_does_not_overwrite(self):
+        with self.assertRaises(ValueError):
+            self.library.save_text("../outside.txt", "no")
+        path = self.library.save_text("notes.md", "hello")
+        self.assertTrue(path.is_file())
+        self.assertEqual(path.read_text(encoding="utf-8"), "hello")
+        with self.assertRaises(FileExistsError):
+            self.library.save_text("notes.md", "again")
 
     def test_read_refuses_escape(self):
         with self.assertRaises(ValueError):

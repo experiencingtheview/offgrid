@@ -1,8 +1,8 @@
 @echo off
-rem OffGrid launcher (Windows). Starts the bundled model server if needed,
-rem waits for it to answer, then runs the agent with whatever arguments you gave.
-rem When something is missing it says why and keeps the window open, because a
-rem double-click closes the console the moment the script exits.
+rem OffGrid launcher (Windows). With no arguments it opens the one-click browser
+rem setup. Explicit commands start the bundled model server first. When something is
+rem missing it says why and keeps the window open, because a double-click
+rem closes the console the moment the script exits.
 setlocal enabledelayedexpansion
 title OffGrid
 
@@ -42,14 +42,29 @@ goto no_python
 :check_python
 "%PY%" %PYARGS% -c "import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 1)" >nul 2>&1
 if errorlevel 1 (
-  echo OffGrid: the Python found at "%PY%" is older than 3.9.
-  echo Install Python 3.9 or newer from https://www.python.org/downloads/windows/
-  goto fail
+  if defined BOOTSTRAPPED goto old_python
+  rem A system Python can be old or broken. Download the private one
+  rem instead of sending a non-programmer to python.org.
+  set "PY="
+  set "PYARGS="
+  goto no_python
 )
+goto python_ok
 
+:old_python
+echo OffGrid: the private Python runtime is older than 3.9.
+echo Check the internet connection and run OffGrid again.
+goto fail
+
+:python_ok
 set "PYTHONPATH=%ROOT%;%PYTHONPATH%"
 if not exist "%ROOT%\logs" mkdir "%ROOT%\logs"
 if not exist "%ROOT%\run" mkdir "%ROOT%\run"
+
+rem The setup command starts and owns the model server itself. Starting a second
+rem copy here would make a double-click wait for the same model twice.
+if "%~1"=="" goto run
+if /I "%~1"=="easy" goto run
 
 set "SERVER="
 for /r "%ROOT%\runtime\llama" %%F in (llama-server.exe) do if not defined SERVER set "SERVER=%%~fF"
@@ -81,7 +96,7 @@ echo Check "%ROOT%\logs\llama.log" or run: offgrid doctor
 
 :run
 if "%~1"=="" (
-  "%PY%" %PYARGS% -m offgrid chat
+  "%PY%" %PYARGS% -m offgrid easy
 ) else (
   "%PY%" %PYARGS% -m offgrid %*
 )
@@ -97,17 +112,26 @@ pause >nul
 endlocal & exit /b %RC%
 
 :no_python
-echo OffGrid: no working Python 3.9+ was found on this computer.
+if defined BOOTSTRAPPED goto no_python_help
+set "BOOTSTRAPPED=1"
+echo OffGrid: first run needs a private Python runtime.
+echo It will be downloaded into this folder, not installed system-wide.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\launch\bootstrap.ps1"
+if exist "%ROOT%\runtime\python\python.exe" (
+  set "PY=%ROOT%\runtime\python\python.exe"
+  set "PYARGS="
+  goto check_python
+)
+
+:no_python_help
 echo.
-echo   1. Install Python from https://www.python.org/downloads/windows/ and tick
-echo      "Add python.exe to PATH" in the installer.
-echo   2. The Microsoft Store "python" alias is not a working interpreter; if
-echo      that is all you have, install the real one, or run: py -3 offgrid.pyz chat
+echo OffGrid could not set up its private Python runtime.
+echo Check the internet connection and try again.
+echo If this computer blocks downloaded programs, right-click the .zip,
+echo choose Properties, tick Unblock, extract it again, and retry.
 echo.
-echo Windows Smart App Control or SmartScreen can also block a downloaded zip:
-echo   right-click the .zip - Properties - Unblock before extracting, or run
-echo   powershell -Command "Get-ChildItem -Recurse ^| Unblock-File"
-echo in this folder.
+echo Advanced alternative: install Python from https://www.python.org/downloads/windows/
+echo and tick "Add python.exe to PATH". The Microsoft Store alias is not enough.
 
 :fail
 echo.

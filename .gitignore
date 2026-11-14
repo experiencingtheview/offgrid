@@ -21,3 +21,4 @@ run/
 .env.*
 !.env.example
 *.ogv
+/freebuff-sites-build/

@@ -9,9 +9,9 @@ from .cli import main as cli_main
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Start interactive chat, or pass an explicit CLI command through."""
+    """Open the friendly setup, or pass an explicit CLI command through."""
     args = list(sys.argv[1:] if argv is None else argv)
-    return cli_main(args or ["chat"])
+    return cli_main(args or ["easy"])
 
 
 if __name__ == "__main__":

@@ -538,6 +538,29 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(pending[0].source, "sync:desk")
         self.assertIn("staging verification", pending[0].text)
 
+    def test_bulk_import_is_batched(self):
+        entries = [
+            {
+                "kind": "lesson",
+                "text": f"Remote lesson number {index} about widgets and queues.",
+            }
+            for index in range(20)
+        ]
+        statements = []
+        self.store.set_trace_callback(statements.append)
+        try:
+            counts = self.store.import_sync(entries, source="sync:desk")
+        finally:
+            self.store.set_trace_callback(None)
+        self.assertEqual(counts["new"], 20)
+        self.assertEqual(len(self.store.pending(limit=100)), 20)
+        selects = sum(
+            statement.strip().upper().startswith("SELECT")
+            for statement in statements
+            if statement.strip()
+        )
+        self.assertLessEqual(selects, 3)  # rejection keys, rejection wording, existing keys
+
     def test_duplicate_remote_lessons_do_not_pile_up(self):
         entry = {"kind": "fact", "text": "The release script lives in scripts/release.sh."}
         first = import_bundle(

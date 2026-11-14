@@ -407,10 +407,10 @@ jobs:
             type output.txt
             exit /b 1
           )
-          findstr /C:"launch\offgrid.bat is missing" output.txt
-          findstr /C:"Extract the whole zip" output.txt
+          findstr /C:"launch\offgrid.bat is missing" output.txt || exit /b 1
+          findstr /C:"Extract the whole zip" output.txt || exit /b 1
           type output.txt
-      - name: Explain a missing Python interpreter
+      - name: Explain a missing Python interpreter and blocked automatic setup
         shell: cmd
         run: |
           set "WORK=%RUNNER_TEMP%\offgrid-launcher-python"
@@ -421,17 +421,18 @@ jobs:
           > "%WORK%\py.cmd" echo @exit /b 1
           > "%WORK%\python.cmd" echo @exit /b 1
           > "%WORK%\python3.cmd" echo @exit /b 1
+          > "%WORK%\powershell.cmd" echo @exit /b 1
           set "PATH=%WORK%;%SystemRoot%\System32;%SystemRoot%"
           cd /d "%WORK%"
           call OffGrid.bat < nul > output.txt 2>&1
           if not errorlevel 1 (
-            echo Expected a non-zero exit when no Python candidate runs.
+            echo Expected a non-zero exit when no Python candidate runs and the runtime download is blocked.
             type output.txt
             exit /b 1
           )
-          findstr /C:"no working Python 3.9+ was found" output.txt
-          findstr /C:"Microsoft Store" output.txt
-          findstr /C:"Smart App Control" output.txt
+          findstr /C:"could not set up its private Python runtime" output.txt || exit /b 1
+          findstr /C:"Check the internet connection" output.txt || exit /b 1
+          findstr /C:"tick Unblock" output.txt || exit /b 1
           type output.txt
       - name: Start the app with a real interpreter
         shell: cmd
@@ -455,6 +456,25 @@ jobs:
             exit /b 1
           )
           type output.txt
+
+  windows_easy_bootstrap:
+    name: Windows one-click setup without Python
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Hide system Python and run OffGrid.bat
+        shell: pwsh
+        run: ./tests/windows_easy_smoke.ps1 -TimeoutSeconds 900
+      - name: Upload setup logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-easy-smoke-logs
+          path: ${{ runner.temp }}/offgrid-easy-smoke
+          if-no-files-found: ignore
+          retention-days: 7
 
   secret-scan:
     name: Secret scanning
@@ -500,7 +520,7 @@ jobs:
   badge:
     name: Publish public CI status
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop, windows_launcher, secret-scan]
+    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop, windows_launcher, windows_easy_bootstrap, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -516,9 +536,10 @@ jobs:
           MACOS_DESKTOP_RESULT: ${{ needs.macos_desktop.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
           WINDOWS_LAUNCHER_RESULT: ${{ needs.windows_launcher.result }}
+          WINDOWS_EASY_RESULT: ${{ needs.windows_easy_bootstrap.result }}
           SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
         run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ] && [ "$WINDOWS_LAUNCHER_RESULT" = "success" ] && [ "$SECRET_SCAN_RESULT" = "success" ]; then
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ] && [ "$WINDOWS_LAUNCHER_RESULT" = "success" ] && [ "$WINDOWS_EASY_RESULT" = "success" ] && [ "$SECRET_SCAN_RESULT" = "success" ]; then
             result=passing
           else
             result=failing

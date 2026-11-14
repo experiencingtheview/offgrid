@@ -2,10 +2,114 @@
 
 All notable changes to OffGrid are recorded here.
 
+## [Unreleased]
+
+### Added
+
+- Bounded, process-local caches for expensive library and memory searches.
+  Repeated identical queries skip the semantic scan; library changes are
+  detected with a file-stat snapshot, memory writes clear recall/rejection
+  entries, and the cache is never written to disk. See `docs/QUERY_CACHE.md`.
+- Offline image optimization with `offgrid images compress`: PNG files are
+  losslessly recompressed with the standard library, JPEG APPn/COM metadata can
+  be removed with `--strip-metadata`, and writes are atomic and never overwrite
+  by default. `--in-place` replaces originals deliberately; directory inputs
+  are recursive and `--output` preserves relative paths. See `docs/IMAGES.md`.
+- SQLite memory query indexes: composite status/created and
+  status/kind/created indexes cover the review queue, recent listing and
+  accepted-by-kind stats. Existing databases receive them during the normal
+  migration; no manual command is needed. The memory store also reuses a
+  bounded pool of four connections with WAL and a busy timeout; writes remain
+  serialized while reads can overlap.
+- Round-robin load balancing across multiple OpenAI-compatible model endpoints:
+  `--endpoints URL[,URL...]`, repeatable `--endpoints` flags, the
+  `endpoints` config field and `OFFGRID_ENDPOINTS`. Each model call starts at
+  the next endpoint; a failed endpoint falls through to the others, and all
+  endpoints failing is reported rather than hidden. Every endpoint keeps the
+  existing loopback/`--allow-remote` guard, and the closing report shows the
+  distribution. See `docs/LOAD_BALANCER.md`.
+- Deep research with human-approved offline saves: `offgrid research "topic"
+  --online` queries only the open-licensed Wikimedia APIs (Wikipedia, Wikibooks
+  and Wikiversity), records the article URL, licence, revision id, retrieval
+  time and SHA-256, and treats the result as source-verified rather than
+  fact-checked. Nothing is saved by default; the terminal asks which results to
+  keep, or `--save` names them explicitly. Agents use `research_query` and
+  `research_save`; the save tool requires human confirmation. Saved notes land
+  in `offgrid-library/research/`, remain searchable offline, and retain their
+  attribution. `--offline` blocks the feature, and arbitrary URLs, scraped HTML
+  and redirects are not supported. Successful research API responses are cached
+  privately for one hour by default, with `--research-cache`,
+  `--research-cache-ttl` and `--refresh-research` controls; failed responses are
+  not cached. See `docs/RESEARCH.md`.
+- The project site now uses Cloudflare's edge cache for the rendered page and
+  its static assets, with a five-minute freshness window and a safe fallback
+  when the cache is unavailable. The Worker isolate also keeps the last release
+  digest in memory for five minutes, so a cache miss does not immediately go
+  back to GitHub. No third-party CDN or client script was added.
+- OffGrid Studio: `offgrid studio` serves one local browser app for the team,
+  built from llama.cpp's MIT server web UI. It adds OffGrid branding, a live
+  team/workspace panel, and an OpenAI-compatible endpoint that runs each chat
+  message through the planner/coder/reviewer/tester team. The badge and Team
+  panel use reduced-motion-aware loading skeletons until the roster request
+  resolves. Studio search inputs update their text immediately but debounce the
+  filter callback by 150 ms; clearing cancels the pending callback and Enter
+  flushes it. The optional PDF.js worker is split into its own chunk and loaded
+  only when a PDF is opened. Chat attachment thumbnails, PDF pages and inline
+  tool images use native lazy loading and async decoding, while an opened
+  full-size preview stays eager. The non-critical Studio badge and site copy
+  scripts are deferred with low fetch priority. Static files are held in a process-local server
+  cache with ETags, so repeat loads can return `304 Not Modified` without
+  rereading the bundle. The conversation sidebar shows the newest 20 chats and
+  reveals older ones in batches, keeping the active chat visible. The team
+  badge and panel poll every 30 seconds but only touch the DOM when the roster,
+  summary, or status actually changes. Hand-written Studio and website CSS and
+  JavaScript are served from minified `.min` assets; readable sources are kept
+  beside them. JSON API
+  responses are gzip-compressed when the client accepts it, and gzip request
+  bodies are accepted with the same 1 MB decompressed-size limit. Local-only by
+  default; `--access-key` is required
+  before binding to a non-loopback interface. The UI bundle and its MIT licence are in
+  `offgrid/web/`.
+- Flipper Zero signal support when suitable hardware is connected over USB
+  serial: `offgrid signals status|info|read|scan|ir-send` and the agent tools
+  `signals_status`, `signal_read`, `signal_scan` and `signal_send_ir`. RFID, NFC,
+  iButton, IR receive and Sub-GHz receive are read-only; IR transmit is the only
+  write, is `read-only` by default, requires the `ask`/`auto` signal policy and
+  is audited before it is sent. Sub-GHz transmit, replay, cloning, emulation,
+  BadUSB, GPIO writes and arbitrary Flipper commands are deliberately absent.
+  Linux/macOS only; see `docs/SIGNALS.md`.
+- Local device control: `.offgrid/devices.json` declares typed sensors, gauges,
+  lights, relays and thermostats for Home Assistant, direct HTTP JSON or Modbus
+  TCP, plus a simulator for tests. Agents gain `devices_list`, `device_read`,
+  `device_diagnose` and `device_set` tools; `offgrid devices` provides the same
+  operations from the CLI. Writes are read-only by default, require declared
+  safe ranges, gate dangerous points, refuse public hosts and are audited
+  before they are sent. See `docs/DEVICES.md` for the safety rules.
+
+### Fixed
+
+- The website quickstart no longer forces horizontal scrolling on narrow
+  phones; its grid can shrink, code blocks scroll inside their cards, and the
+  hero glow is contained at 320 px.
+- A failed release-digest lookup is no longer cached as a page. The next
+  request retries GitHub, and versioned Worker cache keys bypass old fallback
+  entries left by earlier deployments.
+- Memory review and sync import now batch SQLite reads and writes instead of
+  issuing several queries per lesson. Accept, reject, forgive and bulk import
+  stay within a small, bounded number of statements even when hundreds of rows
+  are involved.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added
 
+- A workspace roster: `.offgrid/agents.json` (or `agents_file` in
+  `.offgrid.json`) can add any number of custom agents, each with its own title,
+  prompt, tool allowlist and turn budget. `"like": "coder"` clones a built-in
+  role for another worker. The planner is shown the extra agents and can assign
+  steps to them; `offgrid agents` lists the merged roster and reports entries it
+  refused. Built-in roles, the reviewer, testing and the honesty rules are
+  unchanged.
 - `scripts/apply_tests_ruleset.py`: idempotently applies (or updates) the `Tests`
   ruleset that requires every Tests job on the default branch. Run it once the
   repository's GitHub plan supports rulesets for private repositories; supports
@@ -111,6 +215,12 @@ All notable changes to OffGrid are recorded here.
 - A real `35b` full-bundle option: Qwen3.6-35B-A3B Q4_K_M from `ggml-org`, about
   20.5 GB, with a pinned SHA-256 and Apache-2.0 licensing. `7b` remains the
   default.
+- A `12b` full-bundle option: JetBrains Mellum2.1-12B-A2.5B-Thinking Q4_K_M,
+  about 8.1 GB, with a pinned SHA-256 and Apache-2.0 licensing. It is a 12B
+  mixture-of-experts model with only ~2.5B active parameters, tuned for
+  agentic coding, so a 16 GB laptop or a 12 GB GPU gets long tool-using runs
+  without a data-centre card. The builder warns below 15 GB of RAM and
+  recommends 16 GB; `7b` remains the default.
 - An opt-in `80b` full-bundle option: Qwen3-Next-80B-A3B-Instruct Q4_K_M from
   `Qwen`, about 48.4 GB, with a pinned SHA-256 and Apache-2.0 licensing. The
   wizard warns below 64 GB RAM, and both the wizard and direct builder check

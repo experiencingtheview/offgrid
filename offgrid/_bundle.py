@@ -21,6 +21,8 @@ MIN_ASSETS = (
     "launch/offgrid.sh",
     "launch/offgrid.command",
     "launch/offgrid.bat",
+    "launch/bootstrap.sh",
+    "launch/bootstrap.ps1",
     "scripts/setup_usb.py",
     "README.md",
     "LICENSE",
