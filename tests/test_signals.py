@@ -27,6 +27,7 @@ class FakeFlipper(threading.Thread):
         self.port = os.ttyname(self.slave)
         self.commands: list[str] = []
         self.stop_event = threading.Event()
+        self.ready = threading.Event()
         self.in_nfc = False
         self.started = False
 
@@ -41,6 +42,7 @@ class FakeFlipper(threading.Thread):
 
     def run(self) -> None:
         buffer = ""
+        self.ready.set()
         while not self.stop_event.is_set():
             try:
                 ready, _, _ = select.select([self.master], [], [], 0.1)
@@ -228,8 +230,9 @@ class SerialFramingTests(unittest.TestCase):
     def test_command_and_stream_framing(self) -> None:
         fake = FakeFlipper()
         fake.start()
+        self.assertTrue(fake.ready.wait(2), "the fake Flipper did not start")
         try:
-            with FlipperSerial(fake.port, timeout=2) as client:
+            with FlipperSerial(fake.port, timeout=8) as client:
                 self.assertIn("Device name", client.command("info device"))
                 self.assertIn("NEC", client.stream("ir rx", 2))
         finally:
