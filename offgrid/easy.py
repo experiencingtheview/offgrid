@@ -821,8 +821,8 @@ def run_easy(
         chosen = _free_port(port)
         server = EasyServer(controller, host=host, port=chosen)
         print()
-        print("  OffGrid setup is open in your browser.")
-        print(f"  If it did not open: {server.url}")
+        print("  OffGrid setup is open in your browser.", flush=True)
+        print(f"  If it did not open: {server.url}", flush=True)
         print("  No commands to type. Keep this window open while setup runs.")
         if open_browser:
             try:
