@@ -6,6 +6,12 @@ All notable changes to OffGrid are recorded here.
 
 ### Added
 
+- Recovery restore previews now include a stable plan ID, blockers and warnings,
+  the planned safety snapshot, per-asset provenance, free-space estimates,
+  latest-archive selection details, and platform/pyz diagnostics. Applying a
+  restore with `--expect-plan` refuses when the destination or archive has
+  changed since the preview, and unmanaged destinations now require explicit
+  confirmation before replacement.
 - Bounded, process-local caches for expensive library and memory searches.
   Repeated identical queries skip the semantic scan; library changes are
   detected with a file-stat snapshot, memory writes clear recall/rejection

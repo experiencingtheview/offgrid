@@ -24,6 +24,15 @@ from .providers import LocalProvider, ProviderError, discover, open_provider
 from .self_improve import IdleWatcher, ImproveError, ImprovementTerminal, SelfImprover
 from .session import SessionLog
 from .ui import UI
+from .voice import (
+    NO_INPUT_MESSAGE,
+    NO_MODEL_MESSAGE,
+    find_input_engine,
+    find_recorder,
+    model_engine_compatible,
+    recognizer_for_model,
+    stt_model_setup_message,
+)
 from .workspace import Workspace
 
 HELP = """\
@@ -50,7 +59,7 @@ OffGrid - a free, offline, multi-agent coding team on your own machine.
   offgrid sync [status|peers|serve|push|pull|run|schedule|export|import]  share accepted learning, reviewed locally
   offgrid security [review|map|watch|history|plan|encrypt|decrypt]   reviews, changes, encryption
   offgrid trust                                     what it promises and what it may do
-  offgrid protect [--kit|--check|--restore PATH]    whose side it is on, and a household kit
+  offgrid protect [--kit|--check|--restore PATH|--verify PATH|--recover PATH|--recovery-status PATH|--recover-latest PATH|--quarantine-status PATH|--quarantine-cleanup PATH|--cleanup PATH]  continuity and recovery archives
   offgrid lexicon [--json] [--strict]               the merged meaning vocabulary
   offgrid distribute [--wizard|--build|--list|--to|--check-drive]  build, check or copy a portable app
   offgrid desktop [install|remove|path]              put a shortcut on the desktop
@@ -66,7 +75,11 @@ localhost (llama.cpp, Ollama, LM Studio, vLLM).
 
 Add --speak to run or chat to hear the final response through a voice already
 installed on this machine. Linux needs espeak-ng (or espeak/festival); macOS and
-Windows use their built-in voices. This reads responses aloud; it does not listen.
+Windows use their built-in voices. For a hands-free conversation, run
+`offgrid chat --voice-chat`: it speaks each reply and listens through a local
+microphone recognizer. Windows uses built-in SAPI; Linux and macOS can use a
+local Whisper CLI, whisper.cpp, or --stt-command. The built-in paths keep audio
+on this machine; a custom command is your own program.
 
 The self-improvement workflow is gated: `improve propose` runs the team in a
 copy and leaves a request for review. Nothing reaches the live files until
@@ -81,7 +94,9 @@ can prepare pending requests without a chat session.
 # --------------------------------------------------------------------------
 # parser
 # --------------------------------------------------------------------------
-def add_common(parser: argparse.ArgumentParser) -> None:
+def add_common(
+    parser: argparse.ArgumentParser, *, include_verify: bool = True
+) -> None:
     parser.add_argument("--endpoint", help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8080/v1")
     parser.add_argument(
         "--endpoints",
@@ -129,7 +144,12 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--max-turns", type=int, help="max tool turns per agent (default 12)")
     parser.add_argument("--temperature", type=float, help="sampling temperature (default 0.2)")
-    parser.add_argument("--verify", default="", help="command that proves the work (default: auto-detect)")
+    if include_verify:
+        parser.add_argument(
+            "--verify",
+            default="",
+            help="command that proves the work (default: auto-detect)",
+        )
     parser.add_argument("--no-color", action="store_true", help="plain text output")
     parser.add_argument("-q", "--quiet", action="store_true", help="only errors")
     parser.add_argument("-v", "--verbose", action="store_true", help="show every tool call")
@@ -254,6 +274,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="system voice for --speak (default: the OS voice)",
     )
     chat.add_argument(
+        "--voice-chat",
+        action="store_true",
+        help="speak each reply and listen to the microphone for the next turn",
+    )
+    chat.add_argument(
+        "--listen",
+        action="store_true",
+        help="transcribe one local microphone utterance per turn (without speech output)",
+    )
+    chat.add_argument(
+        "--stt-command",
+        default="",
+        metavar="COMMAND",
+        help="local speech-to-text command; {audio} is replaced with a recorded WAV path",
+    )
+    chat.add_argument(
+        "--stt-model",
+        default="",
+        metavar="PATH",
+        help="local model: .pt for openai-whisper, .bin or .gguf for whisper.cpp",
+    )
+    chat.add_argument(
+        "--stt-language",
+        default="",
+        metavar="CODE",
+        help="optional language code for Whisper, e.g. en",
+    )
+    chat.add_argument(
+        "--listen-seconds",
+        type=float,
+        default=None,
+        metavar="N",
+        help="maximum length of one spoken turn (default: 8); a pause ends it sooner",
+    )
+    chat.add_argument(
         "--improve-when-idle",
         action="store_true",
         help="after a quiet period, propose an improvement as a pending request (never apply it)",
@@ -369,13 +424,24 @@ def build_parser() -> argparse.ArgumentParser:
     studio.add_argument(
         "--host",
         default="127.0.0.1",
-        help="interface to bind (default: 127.0.0.1; use 0.0.0.0 only with --access-key)",
+        help="interface to bind (default: 127.0.0.1; use 0.0.0.0 only with an access key)",
     )
     studio.add_argument("--port", type=int, default=8099, help="port (default: 8099)")
     studio.add_argument(
         "--access-key",
         default="",
-        help="require this key for the API; also read from OFFGRID_STUDIO_KEY",
+        help=(
+            "require this key for Studio (prefer --access-key-file); "
+            "also read from OFFGRID_STUDIO_KEY"
+        ),
+    )
+    studio.add_argument(
+        "--access-key-file",
+        default="",
+        help=(
+            "read the Studio access key from a private file (0600 on POSIX); "
+            "also read from OFFGRID_STUDIO_KEY_FILE"
+        ),
     )
     studio.add_argument(
         "--no-open", action="store_true", help="do not open the browser automatically"
@@ -650,12 +716,75 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="verify a backup directory and restore its kit and model",
     )
+    protect_mode.add_argument(
+        "--verify",
+        dest="verify_archive",
+        metavar="PATH",
+        help="verify a recovery archive without changing anything",
+    )
+    protect_mode.add_argument(
+        "--recover",
+        dest="recover_archive",
+        metavar="PATH",
+        help=(
+            "verify a recovery archive and restore it over its captured "
+            "destination (or --out); add --dry-run to preview"
+        ),
+    )
+    protect_mode.add_argument(
+        "--recovery-status",
+        dest="recovery_status",
+        metavar="DESTINATION",
+        help=(
+            "list retained recovery generations, verify them, and report "
+            "whether the latest valid archive can restore this install"
+        ),
+    )
+    protect_mode.add_argument(
+        "--recover-latest",
+        dest="recover_latest",
+        metavar="DESTINATION",
+        help="restore the latest valid retained recovery archive for DESTINATION",
+    )
+    protect_mode.add_argument(
+        "--quarantine-status",
+        dest="quarantine_status",
+        metavar="DESTINATION",
+        help=(
+            "show retained corrupt install quarantines with metadata, age and "
+            "retention state"
+        ),
+    )
+    protect_mode.add_argument(
+        "--quarantine-cleanup",
+        dest="quarantine_cleanup",
+        metavar="DESTINATION",
+        help=(
+            "plan age-based quarantine retention; with --apply remove old "
+            "quarantine trees while retaining their metadata"
+        ),
+    )
+    protect.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --quarantine-cleanup: actually remove selected old quarantines",
+    )
+    protect_mode.add_argument(
+        "--cleanup",
+        "--storage-cleanup",
+        dest="storage_cleanup",
+        metavar="DESTINATION",
+        help=(
+            "show old abandoned transaction, quarantine and archive temporaries "
+            "that could be removed; this is always a dry run"
+        ),
+    )
     protect.add_argument(
         "--out",
         default="",
         help=(
-            "kit path to write, check, use as the backup source, or restore to "
-            "(default: .offgrid/continuity.md)"
+            "kit path to write, check, use as the backup source, or restore to; "
+            "with --recover: the install destination (default: captured path)"
         ),
     )
     protect.add_argument(
@@ -665,7 +794,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --restore: model destination (default: models/<name>.gguf)",
     )
     protect.add_argument(
-        "--force", action="store_true", help="overwrite an existing kit or backup files"
+        "--force",
+        action="store_true",
+        help="overwrite an existing kit, backup files, or recovery destination",
+    )
+    protect.add_argument(
+        "--asset-source",
+        "--assets",
+        dest="asset_source",
+        default="",
+        metavar="PATH",
+        help=(
+            "with --recover or --recover-latest: reuse models and runtimes "
+            "from PATH after verifying them against the archive"
+        ),
+    )
+    protect.add_argument(
+        "--confirm",
+        "--yes",
+        dest="confirm",
+        action="store_true",
+        help=(
+            "with --recovery-status, --recover or --recover-latest: "
+            "confirm an unmanaged destination, or a newer, older or "
+            "different-lineage one"
+        ),
+    )
+    protect.add_argument(
+        "--expect-plan",
+        default="",
+        metavar="ID",
+        help=(
+            "with --recover or --recover-latest: apply only if the current "
+            "restore plan matches the ID printed by --dry-run"
+        ),
     )
     protect.add_argument(
         "--backup",
@@ -690,10 +852,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-age-days",
         type=float,
         default=30.0,
-        help="with --check: maximum age of the continuity kit in days (default 30)",
+        help=(
+            "with --check: maximum age of the continuity kit in days; "
+            "with --cleanup: minimum age of removable temporaries (default 30)"
+        ),
+    )
+    protect.add_argument(
+        "--max-size-mb",
+        type=float,
+        default=1024.0,
+        help="with --cleanup: maximum MiB to select for removal (default 1024)",
+    )
+    protect.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "with --recover or --recover-latest: show a read-only restore plan; "
+            "with --cleanup: keep the default read-only cleanup plan"
+        ),
     )
     protect.add_argument("--json", action="store_true", help="machine-readable output")
-    add_common(protect)
+    add_common(protect, include_verify=False)
 
     distribute = subparsers.add_parser(
         "distribute", help="build a portable app, or install it on a mounted device"
@@ -891,6 +1070,19 @@ def overrides_from(args: argparse.Namespace) -> Dict[str, Any]:
         out["speak"] = True
     if getattr(args, "voice", ""):
         out["voice"] = args.voice
+    if getattr(args, "voice_chat", False):
+        out["speak"] = True
+        out["listen"] = True
+    if getattr(args, "listen", False):
+        out["listen"] = True
+    if getattr(args, "stt_command", ""):
+        out["stt_command"] = args.stt_command
+    if getattr(args, "stt_model", ""):
+        out["stt_model"] = args.stt_model
+    if getattr(args, "stt_language", ""):
+        out["stt_language"] = args.stt_language
+    if getattr(args, "listen_seconds", None) is not None:
+        out["listen_seconds"] = max(1.0, min(float(args.listen_seconds), 60.0))
     if getattr(args, "council", False):
         out["council"] = True
     if getattr(args, "council_public", False):
@@ -1424,13 +1616,71 @@ def cmd_chat(args: argparse.Namespace) -> int:
         remembered = team.memory.stats()["total"] if team.memory else 0
         if remembered:
             ui.info(f"carrying {remembered} remembered note(s) from earlier sessions")
+    if config.listen:
+        engine = find_input_engine(command=config.stt_command, model=config.stt_model)
+        if engine is None:
+            if recognizer_for_model(config.stt_model):
+                ui.warn(
+                    stt_model_setup_message(config.stt_model)
+                    + "; using the keyboard"
+                )
+            else:
+                ui.warn(NO_INPUT_MESSAGE + "; using the keyboard")
+            config.listen = False
+        elif (
+            engine.kind in ("whisper", "whisper_cpp")
+            and not model_engine_compatible(config.stt_model, engine.kind)
+        ):
+            ui.warn(
+                stt_model_setup_message(config.stt_model, engine.kind)
+                + "; using the keyboard"
+            )
+            config.listen = False
+        elif (
+            engine.kind in ("whisper", "whisper_cpp")
+            and not config.stt_model.strip()
+        ):
+            ui.warn(NO_MODEL_MESSAGE + "; using the keyboard")
+            config.listen = False
+        elif engine.kind in ("whisper", "whisper_cpp") and find_recorder() is None:
+            ui.warn(
+                "no local microphone recorder found; install arecord, ffmpeg or SoX; "
+                "using the keyboard"
+            )
+            config.listen = False
+        else:
+            ui.info(
+                f"voice input: {engine.name}; speak after the listening cue "
+                f"(a pause ends the turn; up to {config.listen_seconds:g}s)"
+            )
 
     ui.rule()
-    ui.info("describe what you want. /help for commands, /quit to leave.")
+    if config.listen:
+        ui.info("speak your request. /help for commands, /voice to toggle input, /quit to leave.")
+    else:
+        ui.info("describe what you want. /help for commands, /quit to leave.")
     ui.rule()
     while True:
         try:
-            line = ui.ask(ui.paint("you> ", "\033[1m", "\033[36m"))
+            if config.listen:
+                ui.info(
+                    f"listening (pause to finish; up to {config.listen_seconds:g}s)..."
+                )
+                ok, heard, _ = ui.listen()
+                if not ok:
+                    ui.info("continuing with the keyboard for this turn.")
+                    line = ui.ask(ui.paint("you> ", "\033[1m", "\033[36m"))
+                elif not heard.strip():
+                    ui.info("(no speech heard)")
+                    continue
+                else:
+                    print(
+                        "  " + ui.paint("you (voice)> ", "\033[1m", "\033[36m") + heard,
+                        flush=True,
+                    )
+                    line = heard
+            else:
+                line = ui.ask(ui.paint("you> ", "\033[1m", "\033[36m"))
         except (EOFError, KeyboardInterrupt):
             print()
             if watcher:
@@ -1456,6 +1706,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ui.info("/library        offline library contents")
                 ui.info("/improve        pending self-improvement requests")
                 ui.info("/status         model, endpoint, settings")
+                ui.info("/voice          turn microphone input on or off")
                 ui.info("/quit           leave")
                 continue
             if command == "diff":
@@ -1501,6 +1752,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 continue
             if command == "status":
                 print(config.describe())
+                continue
+            if command == "voice":
+                config.listen = not config.listen
+                ui.info(f"voice input {'on' if config.listen else 'off'}")
                 continue
             ui.warn(f"unknown command /{command}")
             continue
@@ -1551,6 +1806,122 @@ def _print_readiness(report: Any, ui: UI, heading: str = "") -> None:
         ui.warn("not ready; fix the failed check(s) above")
 
 
+def _recovery_latest_selection(inventory: Any) -> dict:
+    """Explain which retained archive was selected for latest recovery."""
+    archives = list(inventory.archives)
+    selected = next(
+        (
+            archive
+            for archive in archives
+            if inventory.latest_valid is not None
+            and archive.path == inventory.latest_valid
+        ),
+        None,
+    )
+    selected_index = (
+        archives.index(selected) if selected is not None else len(archives)
+    )
+    skipped = []
+    for archive in archives[:selected_index]:
+        skipped.append(
+            {
+                "generation": archive.generation,
+                "path": str(archive.path),
+                "valid": archive.valid,
+                "ready": archive.ready,
+                "reason": archive.readiness.reason,
+            }
+        )
+    return {
+        "archive": str(inventory.latest_valid or ""),
+        "generation": selected.generation if selected is not None else 0,
+        "skipped": skipped,
+    }
+
+
+def _print_restore_plan(plan: Any, ui: UI) -> None:
+    """Print a read-only recovery restore plan."""
+    ui.info(f"restore plan for {plan.destination}")
+    ui.info(f"  archive: {plan.archive}")
+    if getattr(plan, "plan_id", ""):
+        ui.info(f"  plan id: {plan.plan_id}")
+    if plan.asset_source:
+        ui.info(f"  asset source: {plan.asset_source}")
+    if getattr(plan, "lineage", ""):
+        ui.info(f"  lineage: {plan.lineage}")
+        if getattr(plan, "lineage_reason", ""):
+            ui.info(f"    {plan.lineage_reason}")
+    ui.info(
+        f"  mode: {'single-file pyz' if plan.file_restore else 'directory'}"
+    )
+    ui.info(f"  overwrite: {'yes' if plan.overwrite else 'no'}")
+    ui.info(f"  force: {plan.force_status}")
+    if getattr(plan, "safety_snapshot", ""):
+        protection = (
+            "retained and protected"
+            if getattr(plan, "safety_snapshot_protected", False)
+            else "not protected"
+        )
+        ui.info(
+            f"  safety snapshot: {plan.safety_snapshot} "
+            f"(generation {plan.safety_generation}, {protection})"
+        )
+    elif getattr(plan, "overwrite", False):
+        ui.warn("  safety snapshot: none (current destination is not reusable)")
+    blockers = list(getattr(plan, "blockers", ()))
+    for blocker in blockers:
+        ui.error(f"  blocker: {blocker}")
+    warnings = list(getattr(plan, "warnings", ()))
+    for warning in warnings:
+        ui.warn(f"  warning: {warning}")
+    if getattr(plan, "required_bytes", 0):
+        ui.info(
+            "  estimated space: "
+            f"{plan.required_bytes} bytes; available: "
+            f"{getattr(plan, 'available_bytes', 0)} bytes"
+        )
+    drift = list(plan.drift)
+    ui.info(f"  drift: {'none' if not drift else f'{len(drift)} item(s)'}")
+    for item in drift:
+        ui.warn(f"    {item}")
+
+    files = list(plan.affected_files)
+    if files:
+        ui.info(f"  affected files ({len(files)}):")
+        for item in files:
+            suffix = " (executable)" if item.executable else ""
+            ui.info(
+                f"    {item.action}: {item.path} "
+                f"[{item.kind}, {item.size} bytes]{suffix}"
+            )
+    else:
+        ui.info("  affected files: none")
+
+    preserved = list(plan.preserved_state)
+    ui.info(
+        "  preserved state: "
+        + (", ".join(preserved) if preserved else "none")
+    )
+    assets = list(plan.required_assets)
+    if assets:
+        ui.info("  required assets:")
+        for item in assets:
+            mark = "ok" if item.status == "ready" else "FAIL"
+            required = "required" if item.required else "optional"
+            ui.info(f"    {mark} {item.path} [{required}]: {item.status}")
+    else:
+        ui.info("  required assets: none")
+
+    if getattr(plan, "confirmation_required", False):
+        ui.warn(
+            "  explicit confirmation required; pass --confirm (or --yes)"
+        )
+    if plan.ready:
+        ui.ok("  plan is ready; nothing was changed")
+    else:
+        ui.error(f"  not ready: {plan.reason}")
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
     as_json = bool(getattr(args, "json", False))
@@ -1587,6 +1958,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     readiness = primary_module.readiness(
         config, workspace.root, signing_key_path=signing_key_path
     )
+    from . import runtime_identity
+
+    runtime_report = runtime_identity.inspect_app(workspace.root)
     exit_code = 0 if found or (config.endpoint and not config.endpoints) else 1
     if strict_failed:
         exit_code = 1
@@ -1651,6 +2025,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "lexicon_warnings": list(lexicon.warnings),
             "strict": strict,
             "strict_failed": strict_failed,
+            "runtime_identity": runtime_report,
             "continuity": readiness.as_dict(),
             "exit_code": exit_code,
         }
@@ -1671,6 +2046,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if capacity is not None:
         print(f"  capacity    {describe_capacity(capacity, effort)}")
     print(f"  effort      {effort.name}: {effort.description}")
+    for kind in ("python", "llama"):
+        report = runtime_report["runtimes"][kind]
+        print(f"  runtime {kind:<7} {report['summary']}")
+    if runtime_report["identity_id"]:
+        print(f"  identity    {runtime_report['identity_id']}")
+    else:
+        print("  identity    incomplete (both runtimes must be verified)")
     if not fleet.peers:
         print("  fleet       off, no peers registered")
     else:
@@ -3039,10 +3421,431 @@ def cmd_security(args: argparse.Namespace) -> int:
 
 def cmd_protect(args: argparse.Namespace) -> int:
     config, ui, workspace = prepare(args)
+    from . import install_transaction as install_transaction_module
     from . import primary as primary_module
+    from . import recovery as recovery_module
 
     sign_key_arg = getattr(args, "sign_key", "") or ""
     signing_key_path = Path(sign_key_arg).expanduser() if sign_key_arg else None
+    asset_source_arg = getattr(args, "asset_source", "") or ""
+    asset_source = (
+        Path(asset_source_arg).expanduser() if asset_source_arg else None
+    )
+    confirm = bool(getattr(args, "confirm", False))
+    expect_plan = str(getattr(args, "expect_plan", "") or "").strip()
+    verify_archive = getattr(args, "verify_archive", None)
+    recover_archive = getattr(args, "recover_archive", None)
+    recovery_status = getattr(args, "recovery_status", None)
+    recover_latest = getattr(args, "recover_latest", None)
+    quarantine_status = getattr(args, "quarantine_status", None)
+    quarantine_cleanup = getattr(args, "quarantine_cleanup", None)
+    storage_cleanup = getattr(args, "storage_cleanup", None)
+
+    if verify_archive is not None:
+        if not str(verify_archive).strip():
+            ui.error("--verify requires a recovery archive path")
+            return 2
+        # Keep verification read-only. --backup and --out could write if the
+        # verification branch ever fell through, so reject them. --sign-key and
+        # --model-out cannot write without --backup/--restore, so leave them
+        # ignored rather than making every harmless combination an error.
+        conflicts = []
+        if getattr(args, "backup", []):
+            conflicts.append("--backup")
+        if getattr(args, "out", ""):
+            conflicts.append("--out")
+        if conflicts:
+            ui.error(
+                "--verify cannot be combined with "
+                + " or ".join(conflicts)
+                + "; verification is read-only"
+            )
+            return 2
+        try:
+            report = recovery_module.verify_recovery_archive(
+                Path(verify_archive).expanduser()
+            )
+        except (recovery_module.RecoveryError, OSError) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(report.as_dict(), indent=2))
+        else:
+            ui.ok(f"recovery archive verified: {report.path}")
+            ui.info(f"  version: {report.version}")
+            ui.info(f"  install: {report.install_id}")
+            ui.info(f"  files: {report.files} ({report.bytes} bytes)")
+            if report.config_sanitized:
+                ui.info("  config.json is present and sanitized")
+        return 0
+
+    if recovery_status is not None:
+        if not str(recovery_status).strip():
+            ui.error("--recovery-status requires an install destination")
+            return 2
+        conflicts = []
+        if getattr(args, "backup", []):
+            conflicts.append("--backup")
+        if getattr(args, "out", ""):
+            conflicts.append("--out")
+        if conflicts:
+            ui.error(
+                "--recovery-status cannot be combined with "
+                + " or ".join(conflicts)
+                + "; inventory is read-only"
+            )
+            return 2
+        try:
+            inventory = install_transaction_module.recovery_inventory(
+                Path(recovery_status).expanduser(), confirm=confirm
+            )
+        except (install_transaction_module.InstallError, OSError) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(inventory.as_dict(), indent=2))
+        else:
+            ui.info(f"recovery archive inventory for {inventory.destination}")
+            for archive in inventory.archives:
+                label = (
+                    "legacy archive"
+                    if archive.generation == 0
+                    else f"generation {archive.generation}"
+                )
+                if archive.ready:
+                    ui.ok(f"  {label}: restore-ready")
+                elif archive.valid:
+                    ui.warn(
+                        f"  {label}: valid, not restore-ready: "
+                        f"{archive.readiness.reason}"
+                    )
+                else:
+                    ui.error(
+                        f"  {label}: invalid: {archive.readiness.reason}"
+                    )
+                ui.info(f"    path: {archive.path}")
+            if inventory.latest_valid:
+                ui.info(f"  latest valid: {inventory.latest_valid}")
+            if inventory.ready:
+                ui.ok(f"  restore-ready: yes ({inventory.reason})")
+            else:
+                ui.error(f"  restore-ready: no ({inventory.reason})")
+        return 0 if inventory.ready else 1
+
+    if recover_latest is not None:
+        if not str(recover_latest).strip():
+            ui.error("--recover-latest requires an install destination")
+            return 2
+        if (
+            getattr(args, "backup", [])
+            or sign_key_arg
+            or getattr(args, "model_out", "")
+            or getattr(args, "out", "")
+        ):
+            ui.error(
+                "--recover-latest cannot be combined with --backup, "
+                "--sign-key, --model-out or --out"
+            )
+            return 2
+        if getattr(args, "dry_run", False):
+            try:
+                inventory = install_transaction_module.recovery_inventory(
+                    Path(recover_latest).expanduser()
+                )
+            except (install_transaction_module.InstallError, OSError) as exc:
+                ui.error(str(exc))
+                return 1
+            if inventory.latest_valid is None:
+                ui.error(
+                    f"no valid recovery archive for {inventory.destination}: "
+                    f"{inventory.reason}"
+                )
+                return 1
+            plan = recovery_module.recovery_restore_plan(
+                inventory.latest_valid,
+                inventory.destination,
+                force=bool(args.force),
+                asset_source=asset_source,
+                confirm=confirm,
+            )
+            selection = _recovery_latest_selection(inventory)
+            if args.json:
+                payload = plan.as_dict()
+                payload["selection"] = selection
+                print(json.dumps(payload, indent=2))
+            else:
+                _print_restore_plan(plan, ui)
+                ui.info(
+                    "  selected latest valid generation: "
+                    f"{selection['generation']} ({selection['archive']})"
+                )
+                for skipped in selection["skipped"]:
+                    ui.warn(
+                        f"    skipped generation {skipped['generation']}: "
+                        f"{skipped['reason']}"
+                    )
+            return 0 if plan.ready else 1
+        try:
+            restored = install_transaction_module.restore_latest_recovery_archive(
+                Path(recover_latest).expanduser(),
+                force=bool(args.force),
+                asset_source=asset_source,
+                confirm=confirm,
+                expect_plan=expect_plan or None,
+            )
+        except (
+            install_transaction_module.InstallError,
+            recovery_module.RecoveryError,
+            OSError,
+        ) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(restored.as_dict(), indent=2))
+        else:
+            ui.ok(
+                "restored the latest valid recovery archive to "
+                f"{restored.destination}"
+            )
+            ui.info(f"  install: {restored.install_id}")
+            ui.info(f"  version: {restored.version}")
+            ui.info(f"  archive: {restored.archive}")
+            if restored.asset_source:
+                ui.info(f"  assets reused from: {restored.asset_source}")
+            if getattr(restored, "lineage", ""):
+                ui.info(f"  lineage: {restored.lineage}")
+            if restored.safety_snapshot:
+                ui.info(f"  safety snapshot: {restored.safety_snapshot}")
+                ui.info(f"  undo snapshot: {restored.safety_snapshot}")
+            ui.info("  models and runtimes were left in place")
+        return 0
+
+    if quarantine_status is not None:
+        if not str(quarantine_status).strip():
+            ui.error("--quarantine-status requires an install destination")
+            return 2
+        conflicts = []
+        if getattr(args, "backup", []):
+            conflicts.append("--backup")
+        if getattr(args, "out", ""):
+            conflicts.append("--out")
+        if conflicts:
+            ui.error(
+                "--quarantine-status cannot be combined with "
+                + " or ".join(conflicts)
+                + "; inventory is read-only"
+            )
+            return 2
+        try:
+            inventory = install_transaction_module.quarantine_inventory(
+                Path(quarantine_status).expanduser()
+            )
+        except (install_transaction_module.InstallError, OSError) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(inventory.as_dict(), indent=2))
+        else:
+            ui.info(f"quarantine inventory for {inventory.destination}")
+            if not inventory.quarantines:
+                ui.info("  no quarantines retained")
+            for record in inventory.quarantines:
+                label = "latest" if record.latest else record.retention
+                ui.info(
+                    f"  {record.transaction_id}: {label}, "
+                    f"{record.age_days:.1f} days old, {record.bytes} bytes"
+                )
+                ui.info(f"    reason: {record.reason}")
+                if record.path:
+                    ui.info(f"    tree: {record.path}")
+                if record.state_dir:
+                    ui.info(f"    state: {record.state_dir}")
+                if record.metadata_path:
+                    ui.info(f"    metadata: {record.metadata_path}")
+                if record.error:
+                    ui.warn(f"    warning: {record.error}")
+            for error in inventory.errors:
+                ui.error(f"  warning: {error}")
+        return 0 if inventory.ok else 1
+
+    if quarantine_cleanup is not None:
+        if not str(quarantine_cleanup).strip():
+            ui.error("--quarantine-cleanup requires an install destination")
+            return 2
+        conflicts = []
+        if getattr(args, "backup", []):
+            conflicts.append("--backup")
+        if sign_key_arg:
+            conflicts.append("--sign-key")
+        if getattr(args, "out", ""):
+            conflicts.append("--out")
+        if getattr(args, "model_out", ""):
+            conflicts.append("--model-out")
+        if conflicts:
+            ui.error(
+                "--quarantine-cleanup cannot be combined with "
+                + " or ".join(conflicts)
+            )
+            return 2
+        max_age_days = getattr(args, "max_age_days", 30.0)
+        if max_age_days <= 0:
+            ui.error("--max-age-days must be greater than zero")
+            return 2
+        dry_run = not bool(getattr(args, "apply", False)) or bool(
+            getattr(args, "dry_run", False)
+        )
+        try:
+            report = install_transaction_module.prune_quarantines(
+                Path(quarantine_cleanup).expanduser(),
+                max_age_days=max_age_days,
+                dry_run=dry_run,
+            )
+        except (install_transaction_module.InstallError, ValueError, OSError) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(report.as_dict(), indent=2))
+        else:
+            action = "planned" if report.dry_run else "applied"
+            ui.info(f"quarantine cleanup {action} for {report.destination}")
+            ui.info(
+                f"  keep newest {report.keep}; age limit "
+                f"{report.max_age_days:g} day(s)"
+            )
+            for path in report.pruned:
+                ui.info(f"  {'would remove' if report.dry_run else 'removed'}: {path}")
+            for path in report.kept:
+                ui.info(f"  keep: {path}")
+            for path in report.metadata_retained:
+                ui.info(f"  metadata retained: {path}")
+            if not report.pruned:
+                ui.info("  nothing to prune")
+            for error in report.errors:
+                ui.error(f"  warning: {error}")
+        return 0 if report.ok else 1
+
+    if storage_cleanup is not None:
+        if not str(storage_cleanup).strip():
+            ui.error("--cleanup requires an install destination")
+            return 2
+        conflicts = []
+        if getattr(args, "backup", []):
+            conflicts.append("--backup")
+        if sign_key_arg:
+            conflicts.append("--sign-key")
+        if getattr(args, "out", ""):
+            conflicts.append("--out")
+        if getattr(args, "model_out", ""):
+            conflicts.append("--model-out")
+        if getattr(args, "force", False):
+            conflicts.append("--force")
+        if conflicts:
+            ui.error(
+                "--cleanup cannot be combined with "
+                + " or ".join(conflicts)
+                + "; cleanup is read-only"
+            )
+            return 2
+        max_age_days = getattr(args, "max_age_days", 30.0)
+        if max_age_days <= 0:
+            ui.error("--max-age-days must be greater than zero")
+            return 2
+        max_size_mb = getattr(args, "max_size_mb", 1024.0)
+        if max_size_mb <= 0:
+            ui.error("--max-size-mb must be greater than zero")
+            return 2
+        max_size_bytes = int(max_size_mb * 1024 * 1024)
+        if max_size_bytes < 1:
+            ui.error("--max-size-mb is too small")
+            return 2
+        try:
+            report = install_transaction_module.storage_cleanup(
+                Path(storage_cleanup).expanduser(),
+                max_age_days=max_age_days,
+                max_size_bytes=max_size_bytes,
+            )
+        except (
+            install_transaction_module.InstallError,
+            ValueError,
+            OSError,
+        ) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(report.as_dict(), indent=2))
+        else:
+            ui.info(f"storage cleanup dry run for {report.destination}")
+            ui.info(
+                f"  limits: older than {report.max_age_days:g} day(s); "
+                f"at most {report.max_size_bytes} bytes selected"
+            )
+            for item in report.candidates:
+                ui.info(
+                    f"  would remove ({item.kind}, {item.bytes} bytes): "
+                    f"{item.path}"
+                )
+            for item in report.preserved:
+                ui.info(
+                    f"  keep ({item.kind}, {item.reason}): {item.path}"
+                )
+            if report.candidates:
+                ui.ok(
+                    f"  reclaimable: {report.reclaimable_bytes} bytes; "
+                    "nothing was changed"
+                )
+            else:
+                ui.info("  nothing to remove; nothing was changed")
+            for error in report.errors:
+                ui.error(f"  warning: {error}")
+        return 0 if report.ok else 1
+
+    if recover_archive is not None:
+        if not str(recover_archive).strip():
+            ui.error("--recover requires a recovery archive path")
+            return 2
+        if getattr(args, "backup", []) or sign_key_arg or getattr(args, "model_out", ""):
+            ui.error("--recover cannot be combined with --backup, --sign-key or --model-out")
+            return 2
+        destination = Path(args.out).expanduser() if args.out else None
+        if getattr(args, "dry_run", False):
+            plan = recovery_module.recovery_restore_plan(
+                Path(recover_archive).expanduser(),
+                destination,
+                force=bool(args.force),
+                asset_source=asset_source,
+                confirm=confirm,
+            )
+            if args.json:
+                print(json.dumps(plan.as_dict(), indent=2))
+            else:
+                _print_restore_plan(plan, ui)
+            return 0 if plan.ready else 1
+        try:
+            restored = recovery_module.restore_recovery_archive(
+                Path(recover_archive).expanduser(),
+                destination,
+                force=bool(args.force),
+                asset_source=asset_source,
+                confirm=confirm,
+                expect_plan=expect_plan or None,
+            )
+        except (recovery_module.RecoveryError, OSError) as exc:
+            ui.error(str(exc))
+            return 1
+        if args.json:
+            print(json.dumps(restored.as_dict(), indent=2))
+        else:
+            ui.ok(f"restored a verified recovery archive to {restored.destination}")
+            ui.info(f"  install: {restored.install_id}")
+            ui.info(f"  version: {restored.version}")
+            ui.info(f"  archive: {restored.archive}")
+            if restored.asset_source:
+                ui.info(f"  assets reused from: {restored.asset_source}")
+            if restored.safety_snapshot:
+                ui.info(f"  safety snapshot: {restored.safety_snapshot}")
+                ui.info(f"  undo snapshot: {restored.safety_snapshot}")
+            ui.info("  models and runtimes were left in place")
+        return 0
 
     if getattr(args, "check", False):
         max_age_days = getattr(args, "max_age_days", 30.0)
@@ -3540,12 +4343,40 @@ def cmd_studio(args: argparse.Namespace) -> int:
         str(getattr(args, "access_key", "") or "")
         or str(os.environ.get("OFFGRID_STUDIO_KEY", ""))
     ).strip()
-    loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
-    if not loopback and not access_key:
-        ui.error(
-            "refusing to bind Studio on a non-loopback interface without --access-key"
-        )
+    access_key_file = (
+        str(getattr(args, "access_key_file", "") or "")
+        or str(os.environ.get("OFFGRID_STUDIO_KEY_FILE", ""))
+    ).strip()
+    if access_key and access_key_file:
+        ui.error("use either --access-key or --access-key-file, not both")
         return 2
+    loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
+    from .studio import StudioError, StudioRunner, StudioServer, load_access_key_file
+
+    if access_key_file:
+        try:
+            access_key = load_access_key_file(access_key_file)
+        except StudioError as exc:
+            ui.error(str(exc))
+            return 2
+    if not loopback and not access_key:
+        if sys.stdin is not None and sys.stdin.isatty():
+            try:
+                access_key = getpass.getpass("Studio access key (hidden): ").strip()
+            except (EOFError, KeyboardInterrupt, OSError):
+                access_key = ""
+            if not access_key:
+                ui.error(
+                    "an access key is required for a non-loopback Studio; use "
+                    "--access-key-file or enter one at the prompt"
+                )
+                return 2
+        else:
+            ui.error(
+                "refusing to bind Studio on a non-loopback interface without "
+                "--access-key or --access-key-file"
+            )
+            return 2
     try:
         port = int(getattr(args, "port", 8099))
     except (TypeError, ValueError):
@@ -3561,8 +4392,6 @@ def cmd_studio(args: argparse.Namespace) -> int:
         config.verbose = 1
     ui.color = False
 
-    from .studio import StudioRunner, StudioServer
-
     runner = StudioRunner(config, workspace)
     try:
         server = StudioServer(host, port, runner, api_key=access_key)
@@ -3576,12 +4405,9 @@ def cmd_studio(args: argparse.Namespace) -> int:
     ui.info(f"workspace: {info['workspace']}")
     ui.info(f"model: {info['model']} @ {info['endpoint']}")
     ui.info(f"team: {len(info['agents'])} agent(s)")
+    print(f"  open: {server.url}")
     if access_key:
-        from urllib.parse import quote
-
-        print(f"  open: {server.url}?key={quote(access_key, safe='')}")
-    else:
-        print(f"  open: {server.url}")
+        ui.info("access key required: enter it on the Studio sign-in page")
     ui.info("Ctrl+C stops Studio; the model server keeps running")
 
     opened = False

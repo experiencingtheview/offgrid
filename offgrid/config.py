@@ -87,6 +87,11 @@ class Config:
     color: bool = True
     speak: bool = False  # read each final response aloud through an OS voice
     voice: str = ""  # system voice name; empty uses the OS default
+    listen: bool = False  # transcribe one microphone utterance for each chat turn
+    stt_command: str = ""  # custom local speech-to-text command; {audio} is filled in
+    stt_model: str = ""  # local Whisper model name or path; empty uses Whisper's default
+    stt_language: str = ""  # optional ISO language code for Whisper
+    listen_seconds: float = 8.0  # maximum length of one utterance
     session_dir: str = ".offgrid"
     max_output: int = 6000
     max_agent_history: int = 24
@@ -194,6 +199,7 @@ class Config:
             f"fleet-exec={'on' if self.fleet_exec else 'off'} "
             f"sync={'on' if self.sync_peers else 'off'} "
             f"speech={'on' if self.speak else 'off'} "
+            f"voice-input={'on' if self.listen else 'off'} "
             f"council={'on' if self.council else 'off'} "
             f"self-improve={'idle' if self.self_improve_idle else 'manual'} "
             f"maintenance={self.maintenance_interval:g}s"
@@ -243,6 +249,10 @@ def _from_env() -> Dict[str, Any]:
         "OFFGRID_VERIFY": ("verify_command", str),
         "OFFGRID_TIMEOUT": ("request_timeout", int),
         "OFFGRID_VOICE": ("voice", str),
+        "OFFGRID_STT_COMMAND": ("stt_command", str),
+        "OFFGRID_STT_MODEL": ("stt_model", str),
+        "OFFGRID_STT_LANGUAGE": ("stt_language", str),
+        "OFFGRID_LISTEN_SECONDS": ("listen_seconds", float),
         "OFFGRID_CARETAKER": ("caretaker", str),
         "OFFGRID_SYNC_PORT": ("sync_port", int),
         "OFFGRID_SYNC_INTERVAL": ("sync_interval", int),
@@ -271,6 +281,11 @@ def _from_env() -> Dict[str, Any]:
     if env.get("OFFGRID_NO_MEMORY", "").lower() in ("1", "true", "yes"):
         out["memory"] = False
     if env.get("OFFGRID_SPEAK", "").lower() in ("1", "true", "yes"):
+        out["speak"] = True
+    if env.get("OFFGRID_LISTEN", "").lower() in ("1", "true", "yes"):
+        out["listen"] = True
+    if env.get("OFFGRID_VOICE_CHAT", "").lower() in ("1", "true", "yes"):
+        out["listen"] = True
         out["speak"] = True
     if env.get("OFFGRID_IMPROVE_WHEN_IDLE", "").lower() in ("1", "true", "yes"):
         out["self_improve_idle"] = True

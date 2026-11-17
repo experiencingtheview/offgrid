@@ -18,17 +18,21 @@ import stat
 import subprocess
 import sys
 import tempfile
-import zipapp
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from . import __version__
+from . import __version__, install_manifest, install_transaction
 from ._bundle import assets_root, missing_assets, package_root
 
 BUNDLE_PREFIX = f"offgrid-{__version__}"
 PYZ_NAME = "offgrid.pyz"
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+ZIP_FILE_MODE = 0o644
+ZIP_EXECUTABLE_MODE = 0o755
+ZIP_CREATE_SYSTEM = 3
 DEFAULT_BUNDLE = Path("dist") / f"{BUNDLE_PREFIX}-portable.zip"
 README_FIRST = f"""\
 OffGrid — start here
@@ -48,8 +52,9 @@ You do not need to install Python, Ollama or anything else.
    (On Linux you can also double-click OffGrid.sh; if your file manager asks,
    choose "Run" or "Run in Terminal".)
 
-3. Your browser opens an OffGrid page. Click the big "Set up OffGrid" button
-   and leave the black window open while it downloads.
+3. Your browser opens an OffGrid page. Click the big download button (or
+   choose “Skip model for now” to open the app first) and leave the black
+   window open while it works.
 
 That is the whole setup. The first run needs an internet connection.
 
@@ -60,7 +65,9 @@ OffGrid downloads three things into its own folder:
   * a private Python runtime (about 65 MB), only if your computer does not
     already have a compatible Python;
   * a small local AI engine (about 20 MB);
-  * the starter model, Qwen2.5-Coder 3B (about 2 GB).
+  * the starter model, Qwen2.5-Coder 0.5B (about 0.4 GB) by default. The
+    setup page also offers 3B (about 2 GB), can use an existing Ollama or
+    LM Studio server, and can skip the model download for now.
 
 Nothing is installed system-wide. No account, API key or cloud service is
 needed. The model stays in the models folder and works fully offline after
@@ -78,6 +85,8 @@ If something goes wrong
 * If Windows says "Windows protected your PC", click More info, then Run
   anyway. The launchers are not code-signed. If SmartScreen blocks the zip,
   right-click it, choose Properties, tick Unblock, then extract again.
+* If setup does not open, run scripts\\windows_diagnostics.bat and attach the
+  ZIP it prints. It needs no Python and uploads nothing.
 * On macOS, if Gatekeeper refuses it, right-click OffGrid.command, choose Open,
   then Open again. You only need to do that once.
 * Interrupted? Click "Try again" or run the launcher again. Completed
@@ -215,13 +224,82 @@ def _make_executable(path: Path) -> None:
         pass
 
 
+def _manifest_created(created: Optional[str] = None) -> str:
+    """Return the manifest timestamp, honoring SOURCE_DATE_EPOCH."""
+    if created is not None:
+        return created
+    raw = os.environ.get("SOURCE_DATE_EPOCH")
+    if raw is None:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise PortableError(
+            "SOURCE_DATE_EPOCH must be an integer number of seconds"
+        ) from exc
+    if seconds < 0:
+        raise PortableError("SOURCE_DATE_EPOCH must not be negative")
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except (OverflowError, OSError, ValueError) as exc:
+        raise PortableError(
+            f"SOURCE_DATE_EPOCH is out of range: {raw!r}"
+        ) from exc
+
+
+def _zip_info(name: str, mode: int) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = ZIP_CREATE_SYSTEM
+    info.external_attr = (stat.S_IFREG | mode) << 16
+    info.internal_attr = 0
+    return info
+
+
+def _write_zip_member(
+    archive: zipfile.ZipFile,
+    path: Path,
+    arcname: str,
+    mode: int = ZIP_FILE_MODE,
+) -> None:
+    archive.writestr(_zip_info(arcname, mode), path.read_bytes())
+
+
+def _write_pyz(destination: Path, staging: Path) -> None:
+    with destination.open("wb") as output:
+        output.write(b"#!/usr/bin/env python3\n")
+        with zipfile.ZipFile(
+            output, "w", compression=zipfile.ZIP_STORED
+        ) as archive:
+            for path in sorted(staging.rglob("*")):
+                if path.is_file():
+                    _write_zip_member(
+                        archive,
+                        path,
+                        path.relative_to(staging).as_posix(),
+                    )
+
+
 def _ignore(directory: str, names: List[str]) -> Iterable[str]:
-    ignored = {"__pycache__", ".offgrid", ".pytest_cache", "*.egg-info"}
-    return [name for name in names if name in ignored or name.endswith(".pyc")]
+    ignored = {
+        "__pycache__",
+        ".DS_Store",
+        ".offgrid",
+        ".pytest_cache",
+        "Thumbs.db",
+    }
+    return [
+        name
+        for name in names
+        if name in ignored
+        or name.endswith((".pyc", ".egg-info"))
+    ]
 
 
 def build_pyz(destination: Path, source: Optional[Path] = None, force: bool = False) -> Path:
-    """Build the single-file application with the standard-library zipapp."""
+    """Build the single-file application as a deterministic archive."""
     source = Path(source) if source is not None else source_root()
     destination = Path(destination).expanduser()
     if destination.exists() and not force:
@@ -233,17 +311,13 @@ def build_pyz(destination: Path, source: Optional[Path] = None, force: bool = Fa
     with tempfile.TemporaryDirectory(prefix="offgrid-pyz-") as tmp:
         staging = Path(tmp) / "app"
         shutil.copytree(source / "offgrid", staging / "offgrid", ignore=_ignore)
-        (staging / "__main__.py").write_text(
-            "import sys\n\nfrom offgrid.cli import main\n\n"
-            "if __name__ == \"__main__\":\n    sys.exit(main())\n",
-            encoding="utf-8",
+        (staging / "__main__.py").write_bytes(
+            (
+                "import sys\n\nfrom offgrid.cli import main\n\n"
+                "if __name__ == \"__main__\":\n    sys.exit(main())\n"
+            ).encode("utf-8")
         )
-        zipapp.create_archive(
-            str(staging),
-            target=str(destination),
-            interpreter="/usr/bin/env python3",
-            compressed=True,
-        )
+        _write_pyz(destination, staging)
     _make_executable(destination)
     return destination
 
@@ -260,12 +334,41 @@ def _copy_required(staging: Path, source: Path, name: str) -> None:
         shutil.copy2(source_item, destination)
 
 
-def _write_bundle_zip(staging: Path, destination: Path) -> None:
-    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(staging.rglob("*")):
-            if not path.is_file():
-                continue
-            archive.write(path, path.relative_to(staging.parent).as_posix())
+def _write_bundle_zip(
+    staging: Path,
+    destination: Path,
+    manifest: Mapping[str, Any],
+) -> None:
+    manifest_path = staging / install_manifest.MANIFEST_NAME
+    modes = {
+        str(entry["path"]): (
+            ZIP_EXECUTABLE_MODE if entry["executable"] else ZIP_FILE_MODE
+        )
+        for entry in manifest["files"]
+    }
+    paths = [
+        path
+        for path in sorted(staging.rglob("*"))
+        if path.is_file() and path != manifest_path
+    ]
+    if manifest_path.is_file():
+        paths.append(manifest_path)
+    with zipfile.ZipFile(
+        destination, "w", compression=zipfile.ZIP_STORED
+    ) as archive:
+        for path in paths:
+            relative = path.relative_to(staging).as_posix()
+            mode = (
+                ZIP_FILE_MODE
+                if path == manifest_path
+                else modes.get(relative, ZIP_FILE_MODE)
+            )
+            _write_zip_member(
+                archive,
+                path,
+                path.relative_to(staging.parent).as_posix(),
+                mode,
+            )
 
 
 def build_bundle(
@@ -274,8 +377,10 @@ def build_bundle(
     with_tests: bool = False,
     force: bool = False,
     pyz_path: Optional[Path] = None,
+    created: Optional[str] = None,
 ) -> Path:
     """Build a zip containing source, launchers and the single-file app."""
+    created = _manifest_created(created)
     source = Path(source) if source is not None else source_root()
     assets = bundle_assets_root()
     _require_assets(assets, source, with_tests)
@@ -316,8 +421,37 @@ def build_bundle(
             shutil.copy2(pyz_path, staging / PYZ_NAME)
         else:
             build_pyz(staging / PYZ_NAME, source=source)
-        (staging / "README-FIRST.txt").write_text(README_FIRST, encoding="utf-8")
-        _write_bundle_zip(staging, destination)
+        _make_executable(staging / PYZ_NAME)
+        (staging / "README-FIRST.txt").write_bytes(
+            README_FIRST.encode("utf-8")
+        )
+        manifest = install_manifest.build_manifest(
+            staging,
+            artifact_kind="portable",
+            platform="any",
+            created=created,
+        )
+        install_manifest.write_manifest(staging, manifest)
+        report = install_manifest.verify_manifest(
+            staging, manifest, check_extra=True
+        )
+        if not report.ok:
+            raise PortableError(
+                "portable install manifest did not verify: "
+                + "; ".join(report.errors)
+            )
+        _write_bundle_zip(staging, destination, manifest)
+    try:
+        archive_report = install_manifest.verify_zip(destination)
+    except install_manifest.ManifestError as exc:
+        destination.unlink(missing_ok=True)
+        raise PortableError(f"built zip did not verify: {exc}") from exc
+    if not archive_report.ok:
+        destination.unlink(missing_ok=True)
+        raise PortableError(
+            "built zip install manifest did not verify: "
+            + "; ".join(archive_report.errors)
+        )
     return destination
 
 
@@ -326,8 +460,10 @@ def build_distribution(
     source: Optional[Path] = None,
     with_tests: bool = False,
     force: bool = False,
+    created: Optional[str] = None,
 ) -> Tuple[Path, Path]:
     """Build both the portable zip and its standalone ``.pyz`` sibling."""
+    created = _manifest_created(created)
     destination = Path(destination).expanduser()
     if destination.suffix.lower() != ".zip":
         destination = destination.with_suffix(".zip")
@@ -340,7 +476,14 @@ def build_distribution(
             if path.exists():
                 raise PortableError(f"{path} already exists; pass --force to replace it")
     build_pyz(pyz_path, source=source, force=force)
-    build_bundle(destination, source=source, with_tests=with_tests, force=force, pyz_path=pyz_path)
+    build_bundle(
+        destination,
+        source=source,
+        with_tests=with_tests,
+        force=force,
+        pyz_path=pyz_path,
+        created=created,
+    )
     return destination, pyz_path
 
 
@@ -696,40 +839,42 @@ def _bundle_destination(bundle: Path, target: Path) -> Path:
     )
 
 
+def _mark_launchers_executable(destination: Path) -> None:
+    if not destination.is_dir():
+        return
+    for name in (
+        "launch/offgrid.sh",
+        "launch/offgrid.command",
+        "OffGrid.sh",
+        "OffGrid.command",
+        "offgrid.pyz",
+    ):
+        candidate = destination / name
+        if candidate.is_file():
+            _make_executable(candidate)
+
+
 def _install_bundle_directory(
     bundle: Path,
     target: Path,
     force: bool = False,
     dry_run: bool = False,
 ) -> Path:
-    """Copy a full-bundle directory into the mounted target."""
+    """Install a full-bundle directory through the shared transaction."""
     bundle = _validate_bundle_directory(bundle)
     destination = _bundle_destination(bundle, target)
-    if destination.exists():
-        if not force:
-            raise PortableError(f"{destination} already exists; pass --force to replace it")
-        if not destination.is_dir():
-            raise PortableError(
-                f"{destination} exists and is not a directory; remove it first"
-            )
-    if not dry_run:
-        shutil.copytree(
+    try:
+        report = install_transaction.install_directory(
             bundle,
             destination,
-            dirs_exist_ok=force,
-            copy_function=shutil.copy2,
+            force=force,
+            dry_run=dry_run,
         )
-        for name in (
-            "launch/offgrid.sh",
-            "launch/offgrid.command",
-            "OffGrid.sh",
-            "OffGrid.command",
-            "offgrid.pyz",
-        ):
-            candidate = destination / name
-            if candidate.is_file():
-                _make_executable(candidate)
-    return destination
+    except install_transaction.InstallError as exc:
+        raise PortableError(str(exc)) from exc
+    if not dry_run:
+        _mark_launchers_executable(destination)
+    return report.destination
 
 
 def install_bundle(
@@ -751,18 +896,28 @@ def install_bundle(
     suffix = bundle.suffix.lower()
     if suffix == ".pyz":
         destination = target / bundle.name
-        if destination.exists() and not force:
-            raise PortableError(f"{destination} already exists; pass --force to replace it")
-        if not dry_run:
-            shutil.copy2(bundle, destination)
-            try:
-                destination.chmod(destination.stat().st_mode | stat.S_IXUSR)
-            except OSError:
-                pass
-        return destination
+        try:
+            report = install_transaction.install_file(
+                bundle,
+                destination,
+                force=force,
+                dry_run=dry_run,
+            )
+        except install_transaction.InstallError as exc:
+            raise PortableError(str(exc)) from exc
+        return report.destination
 
     if suffix != ".zip":
         raise PortableError("bundle must be a .zip or .pyz file")
+
+    try:
+        verification = install_manifest.verify_zip(bundle)
+    except install_manifest.ManifestError as exc:
+        raise PortableError(str(exc)) from exc
+    if not verification.ok:
+        raise PortableError(
+            "bundle manifest did not verify: " + "; ".join(verification.errors)
+        )
 
     with zipfile.ZipFile(bundle) as archive:
         roots = {
@@ -774,11 +929,32 @@ def install_bundle(
             raise PortableError("bundle must contain one top-level folder")
         root_name = next(iter(roots))
         destination = target / root_name
-        if destination.exists() and not force:
-            raise PortableError(f"{destination} already exists; pass --force to replace it")
-        if not dry_run:
-            _safe_extract(archive, target)
-    return destination
+        if dry_run:
+            try:
+                install_transaction.preflight_destination(
+                    destination, force=force, kind="directory"
+                )
+            except install_transaction.InstallError as exc:
+                raise PortableError(str(exc)) from exc
+            return destination
+
+        with tempfile.TemporaryDirectory(prefix=".offgrid-extract-", dir=str(target)) as tmp:
+            extract_root = Path(tmp)
+            try:
+                _safe_extract(archive, extract_root)
+            except (OSError, zipfile.BadZipFile) as exc:
+                raise PortableError(f"could not extract bundle: {exc}") from exc
+            source = extract_root / root_name
+            try:
+                report = install_transaction.install_directory(
+                    source,
+                    destination,
+                    force=force,
+                )
+            except install_transaction.InstallError as exc:
+                raise PortableError(str(exc)) from exc
+        _mark_launchers_executable(destination)
+    return report.destination
 
 
 def find_default_bundle() -> Optional[Path]:

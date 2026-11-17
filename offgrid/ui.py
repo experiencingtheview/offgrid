@@ -5,9 +5,10 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from .config import Config
+from .voice import listen as listen_text
 from .voice import speak as speak_text
 
 
@@ -45,6 +46,7 @@ class UI:
         self._spinner_thread: Optional[threading.Thread] = None
         self._spinner_quiet = False
         self._voice_warned = False
+        self._listen_warned = False
 
     # -- primitives ------------------------------------------------------
     def paint(self, text: str, *codes: str) -> str:
@@ -100,6 +102,23 @@ class UI:
         if not ok and not self._voice_warned:
             self.warn(message)
             self._voice_warned = True
+
+    def listen(self) -> Tuple[bool, str, str]:
+        """Record one local utterance for voice chat.
+
+        A missing recognizer is reported once; the caller can continue with
+        keyboard input without losing the session.
+        """
+        ok, text, message = listen_text(
+            self.config.listen_seconds,
+            command=self.config.stt_command,
+            model=self.config.stt_model,
+            language=self.config.stt_language,
+        )
+        if not ok and not self._listen_warned and message:
+            self.warn(message)
+            self._listen_warned = True
+        return ok, text, message
 
     def info(self, text: str) -> None:
         if self.verbose < 1:
