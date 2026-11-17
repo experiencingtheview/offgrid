@@ -121,6 +121,22 @@ jobs:
           offgrid-launch --version
           python -c "from offgrid._bundle import assets_root; raise SystemExit(0 if assets_root() else 1)"
 
+  windows_process_times:
+    name: Windows process-time recovery
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify the real GetProcessTimes marker
+        run: python -m unittest tests.test_install_transaction.TransactionalInstallTests.test_windows_process_start_marker_is_real_and_stable -v
+      - name: Verify recycled-PID lock recovery with real process times
+        run: python -m unittest tests.test_install_transaction.TransactionalInstallTests.test_windows_recycled_pid_lock_is_reclaimed_with_real_marker -v
+
   windows_desktop:
     name: Desktop shortcut on Windows
     runs-on: windows-latest
