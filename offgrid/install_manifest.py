@@ -38,6 +38,12 @@ ARTIFACT_KINDS = frozenset({"portable", "full"})
 FILE_KINDS = frozenset({"app", "launcher", "script", "doc", "pyz", "test", "file"})
 USER_STATE_KINDS = frozenset({"config", "metadata"})
 RUNTIME_KINDS = frozenset({"python", "llama"})
+COMPONENT_KINDS = ("python", "llama", "model")
+COMPONENT_LABELS = {
+    "python": "portable Python",
+    "llama": "llama.cpp",
+    "model": "the GGUF model",
+}
 EXCLUDED_PATHS = (
     ".downloads/**",
     ".git/**",
@@ -134,6 +140,32 @@ def _optional_hash(entry: Mapping[str, Any], key: str, label: str) -> Optional[s
     return _hash(entry[key], f"{label}.{key}")
 
 
+def _requested_component_values(
+    value: Mapping[str, Any], label: str
+) -> Dict[str, bool]:
+    """Validate the component flags recorded on a full artifact."""
+    data = _mapping(value, label)
+    unknown = sorted(set(data) - set(COMPONENT_KINDS))
+    if unknown:
+        raise ManifestError(
+            f"{label} has unsupported component(s): {', '.join(unknown)}"
+        )
+    requested: Dict[str, bool] = {}
+    for key in COMPONENT_KINDS:
+        if key in data:
+            requested[key] = _boolean(data[key], f"{label}.{key}")
+    return requested
+
+
+def requested_components(manifest: Mapping[str, Any]) -> Dict[str, bool]:
+    """Return the full-bundle components the builder was asked to include."""
+    artifact = _mapping(manifest.get("artifact"), "artifact")
+    value = artifact.get("requested_components")
+    if value is None:
+        return {}
+    return _requested_component_values(value, "artifact.requested_components")
+
+
 def _relative_path(value: Any, label: str) -> str:
     path = _string(value, label)
     if "\x00" in path:
@@ -224,6 +256,15 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise ManifestError("artifact.source_sha256 must be a string")
     if source:
         _hash(source, "artifact.source_sha256")
+    if artifact.get("requested_components") is not None:
+        if kind != "full":
+            raise ManifestError(
+                "artifact.requested_components is only valid for full artifacts"
+            )
+        _requested_component_values(
+            artifact["requested_components"],
+            "artifact.requested_components",
+        )
 
     seen: Dict[str, str] = {}
     files = data.get("files")
@@ -700,6 +741,7 @@ def build_manifest(
     source_sha256: str = "",
     entrypoints: Optional[Mapping[str, str]] = None,
     model_hashes: Optional[Mapping[str, str]] = None,
+    requested_components: Optional[Mapping[str, bool]] = None,
 ) -> Dict[str, Any]:
     """Describe an already-staged artifact tree.
 
@@ -727,17 +769,26 @@ def build_manifest(
     user_state = _user_state_entries(root)
     runtimes = _runtime_entries(root)
     models = _model_entries(root, model_hashes)
+    artifact: Dict[str, Any] = {
+        "kind": artifact_kind,
+        "version": version or __version__,
+        "platform": platform,
+        "created": created
+        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_sha256": source_sha256.strip().lower(),
+    }
+    if requested_components is not None:
+        if artifact_kind != "full":
+            raise ManifestError(
+                "requested_components is only valid for full artifacts"
+            )
+        artifact["requested_components"] = _requested_component_values(
+            requested_components, "requested_components"
+        )
     manifest: Dict[str, Any] = {
         "schema": SCHEMA,
         "generator_version": __version__,
-        "artifact": {
-            "kind": artifact_kind,
-            "version": version or __version__,
-            "platform": platform,
-            "created": created
-            or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "source_sha256": source_sha256.strip().lower(),
-        },
+        "artifact": artifact,
         "entrypoints": names,
         "files": files,
         "user_state": user_state,
@@ -754,6 +805,64 @@ def build_manifest(
     }
     validate_manifest(manifest)
     return manifest
+
+
+def _runtime_is_present(root: Path, entry: Mapping[str, Any]) -> bool:
+    relative = str(entry.get("path") or "")
+    binary = str(entry.get("binary") or "")
+    if not relative or not binary:
+        return False
+    directory = root.joinpath(*PurePosixPath(relative).parts)
+    if directory.is_symlink() or not directory.is_dir():
+        return False
+    binary_path = directory.joinpath(*PurePosixPath(binary).parts)
+    return binary_path.is_file() and not binary_path.is_symlink()
+
+
+def _model_is_present(root: Path, entry: Mapping[str, Any]) -> bool:
+    relative = str(entry.get("path") or "")
+    if not relative:
+        return False
+    path = root.joinpath(*PurePosixPath(relative).parts)
+    return path.is_file() and not path.is_symlink()
+
+
+def missing_requested_components(
+    root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    requested: Optional[Mapping[str, bool]] = None,
+) -> List[str]:
+    """Return requested runtimes or models absent from *root*.
+
+    The builder records intent separately from the assets it managed to stage.
+    This guard reads that intent and is shared by the builder and by directory
+    installs, so both refuse a manifest that claims a component but has no
+    usable entry or file for it.  Manifests without the record retain the old
+    behaviour, where their asset entries alone determine completeness.
+    """
+    values = (
+        requested_components(manifest)
+        if requested is None
+        else _requested_component_values(requested, "requested_components")
+    )
+    if not any(values.values()):
+        return []
+    root = Path(root)
+    runtimes = manifest.get("runtimes") or []
+    models = manifest.get("models") or []
+    missing: List[str] = []
+    for kind in ("python", "llama"):
+        if not values.get(kind):
+            continue
+        entries = [entry for entry in runtimes if entry.get("kind") == kind]
+        if not any(_runtime_is_present(root, entry) for entry in entries):
+            missing.append(COMPONENT_LABELS[kind])
+    if values.get("model") and not any(
+        _model_is_present(root, entry) for entry in models
+    ):
+        missing.append(COMPONENT_LABELS["model"])
+    return missing
 
 
 def write_manifest(root: Path, manifest: Mapping[str, Any]) -> Path:

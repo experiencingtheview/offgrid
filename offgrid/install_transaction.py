@@ -26,6 +26,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import re
@@ -34,6 +35,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -43,12 +45,41 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
 
+if os.name != "nt":
+    import fcntl
+
 from . import install_manifest, recovery
 
 STATE_NAME = "install-state.json"
 STATE_SCHEMA = "offgrid.install-state/1"
 JOURNAL_SCHEMA = "offgrid.install-transaction/1"
+_DIRECTORY_RECOVERY_STATUSES = frozenset(
+    {
+        "prepared",
+        "staged",
+        "swapping",
+        "quarantining",
+        "committing",
+        "committed",
+        "rolling_back",
+        "rolled_back",
+    }
+)
+_FILE_RECOVERY_STATUSES = frozenset(
+    {
+        "prepared",
+        "staged",
+        "swapping",
+        "quarantining",
+        "committing",
+        "committed",
+        "rolling_back",
+    }
+)
 TRANSACTION_DIR = ".offgrid-install"
+STAGE_LEASE_SCHEMA = "offgrid.stage-lease/1"
+STAGE_ORPHAN_MAX_AGE_DAYS = 1.0
+STAGE_ORPHAN_MAX_BYTES = 64 * 1024 * 1024 * 1024
 HEALTH_TIMEOUT = 30
 SKIP_COPY_NAMES = {
     "install-state.json",
@@ -88,6 +119,16 @@ class InstallReport:
     @property
     def committed(self) -> bool:
         return self.status == "committed"
+
+
+@dataclass(frozen=True)
+class StagedDirectoryVerification:
+    """Strict, hash-checked verification of a directory ready to commit."""
+
+    source: Path
+    manifest: Dict[str, Any]
+    report: install_manifest.VerificationReport
+    complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -237,6 +278,46 @@ class StorageCleanupReport:
 
 
 @dataclass(frozen=True)
+class StageCleanupReport:
+    """Result of bounded removal of abandoned assembly stages."""
+
+    destination: Path
+    dry_run: bool
+    max_age_days: float
+    max_size_bytes: int
+    candidates: Tuple[StorageCleanupCandidate, ...]
+    removed: Tuple[Path, ...]
+    removed_bytes: int
+    preserved: Tuple[StorageCleanupCandidate, ...]
+    errors: Tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    @property
+    def reclaimed_bytes(self) -> int:
+        if self.dry_run:
+            return sum(item.bytes for item in self.candidates)
+        return self.removed_bytes
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "destination": str(self.destination),
+            "dry_run": self.dry_run,
+            "max_age_days": self.max_age_days,
+            "max_size_bytes": self.max_size_bytes,
+            "reclaimed_bytes": self.reclaimed_bytes,
+            "candidates": [item.as_dict() for item in self.candidates],
+            "removed": [str(path) for path in self.removed],
+            "removed_bytes": self.removed_bytes,
+            "preserved": [item.as_dict() for item in self.preserved],
+            "errors": list(self.errors),
+        }
+
+
+@dataclass(frozen=True)
 class QuarantineRecord:
     """One quarantined install tree and its retained diagnostic metadata."""
 
@@ -375,6 +456,11 @@ class TransactionPaths:
     previous_state_dir: Path
     recovery: Path
 
+    @property
+    def lease(self) -> Path:
+        """Sidecar lease that marks this stage as owned by an active build."""
+        return stage_lease_path(self)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -392,15 +478,98 @@ def _slug(name: str) -> str:
     return (cleaned or "install")[:40]
 
 
-def _key(destination: Path) -> str:
-    digest = hashlib.sha256(str(destination).encode("utf-8")).hexdigest()[:10]
-    return f"{_slug(destination.name)}-{digest}"
+def _windows_path_mode(windows: Optional[bool]) -> bool:
+    return os.name == "nt" if windows is None else windows
+
+
+def _normalized_windows_path(path: Path, *, case: bool = True) -> str:
+    """Return a Windows path with equivalent spellings collapsed.
+
+    ``normpath`` removes dot segments, repeated separators and trailing
+    separators. ``normcase`` then converts each separator to a backslash and
+    folds the path for the case-insensitive Windows filesystem. Extended-length
+    and device prefixes name the same object as the ordinary spelling, so they
+    are stripped before normalization.
+    """
+    text = os.fspath(path)
+    if text[:8].lower() == "\\\\?\\unc\\":
+        text = "\\\\" + text[8:]
+    elif (
+        text.startswith("\\\\?\\")
+        or text.startswith("\\\\.\\")
+    ) and len(text) > 5 and text[5] == ":":
+        text = text[4:]
+    elif text[:8].lower() == "//?/unc/":
+        text = "//" + text[8:]
+    elif (
+        text.startswith("//?/") or text.startswith("//./")
+    ) and len(text) > 5 and text[5] == ":":
+        text = text[4:]
+    text = ntpath.normpath(text)
+    if case:
+        text = ntpath.normcase(text)
+    return text
+
+
+def _path_identity(path: Path, *, windows: Optional[bool] = None) -> str:
+    """Return the identity used for locks, transaction roots and history.
+
+    Windows treats case, slash style and dot segments as equivalent. Hashing
+    the raw spelling lets those variants create separate journals, recovery
+    archives and process-local lock entries for one destination. Other
+    platforms remain case-sensitive.
+    """
+    if _windows_path_mode(windows):
+        return _normalized_windows_path(path)
+    return os.path.normpath(os.fspath(path))
+
+
+def _transaction_root(
+    destination: Path, *, windows: Optional[bool] = None
+) -> Path:
+    """Return one sidecar directory for every spelling of *destination*."""
+    if _windows_path_mode(windows):
+        parent = _normalized_windows_path(destination.parent, case=False)
+        return Path(parent) / TRANSACTION_DIR
+    return destination.parent / TRANSACTION_DIR
+
+
+def _key(destination: Path, *, windows: Optional[bool] = None) -> str:
+    windows = _windows_path_mode(windows)
+    identity = _path_identity(destination, windows=windows)
+    name = ntpath.basename(identity) if windows else os.path.basename(identity)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:10]
+    return f"{_slug(name)}-{digest}"
+
+
+# Leases held by stages created in this process.  The process check alone is not
+# enough after an interrupted build: the same interpreter can start another
+# build while the old lease still names its live PID.
+_ACTIVE_STAGE_LEASES: set = set()
+
+# An OS lock already serializes other processes. This registry also refuses a
+# nested acquisition in the same process, where an OS lock can be recursive or
+# inherited depending on the platform.
+_INSTALL_LOCK_GUARD = threading.Lock()
+_HELD_INSTALL_LOCKS: set = set()
+
+
+def stage_lease_path(staged: object) -> Path:
+    """Return the lease sidecar for a prepared transaction stage."""
+    if isinstance(staged, TransactionPaths):
+        return staged.root / f"{staged.key}.lease-{staged.transaction_id}"
+    stage = Path(staged)  # type: ignore[arg-type]
+    marker = ".stage-"
+    if marker in stage.name:
+        key, transaction_id = stage.name.split(marker, 1)
+        return stage.with_name(f"{key}.lease-{transaction_id}")
+    return stage.with_name(f"{stage.name}.lease")
 
 
 def transaction_paths(destination: Path, transaction_id: Optional[str] = None) -> TransactionPaths:
     destination = _absolute(destination)
     txid = transaction_id or uuid.uuid4().hex
-    root = destination.parent / TRANSACTION_DIR
+    root = _transaction_root(destination)
     key = _key(destination)
     return TransactionPaths(
         destination=destination,
@@ -429,7 +598,9 @@ def prepare_directory_stage(destination: Path) -> TransactionPaths:
     second copy of large assets such as a GGUF model.
 
     This only prepares the hidden transaction directory; the destination is
-    not touched.  Call :func:`discard_directory_stage` if assembly fails.
+    not touched.  A sidecar lease protects the stage from another build's
+    orphan cleanup while it is being assembled.  Call
+    :func:`discard_directory_stage` if assembly fails.
     """
     destination = _absolute(destination)
     if destination.is_symlink():
@@ -443,8 +614,85 @@ def prepare_directory_stage(destination: Path) -> TransactionPaths:
     _ensure_root(paths)
     if paths.stage.exists() or paths.stage.is_symlink():
         raise InstallError(f"transaction stage already exists: {paths.stage}")
-    paths.stage.mkdir(parents=False, exist_ok=False)
+    if paths.lease.exists() or paths.lease.is_symlink():
+        raise InstallError(f"stage lease already exists: {paths.lease}")
+    # Write the lease before creating the stage.  Cleanup only considers stage
+    # directories, so an active builder cannot expose an unleased stage in the
+    # tiny interval between mkdir and writing the lease.
+    _write_stage_lease(paths)
+    try:
+        paths.stage.mkdir(parents=False, exist_ok=False)
+    except BaseException:
+        release_stage_lease(paths)
+        _cleanup_root(paths)
+        raise
     return paths
+
+
+def _stage_lease_payload(paths: TransactionPaths) -> Dict[str, Any]:
+    token = uuid.uuid4().hex
+    payload: Dict[str, Any] = {
+        "schema": STAGE_LEASE_SCHEMA,
+        "pid": os.getpid(),
+        "host": platform.node(),
+        "created": _now(),
+        "destination": str(paths.destination),
+        "stage": str(paths.stage),
+        "token": token,
+    }
+    pid_start = _process_start(os.getpid())
+    if pid_start is not None:
+        payload["pid_start"] = pid_start
+    return payload
+
+
+def _write_stage_lease(paths: TransactionPaths) -> None:
+    payload = _stage_lease_payload(paths)
+    token = str(payload["token"])
+    _ACTIVE_STAGE_LEASES.add(token)
+    try:
+        _write_json_atomic(paths.lease, payload, mode=0o600)
+    except BaseException:
+        _ACTIVE_STAGE_LEASES.discard(token)
+        raise
+
+
+def release_stage_lease(staged: TransactionPaths) -> None:
+    """Release a stage lease; best-effort and safe to call repeatedly."""
+    lease = stage_lease_path(staged)
+    data = _read_json(lease)
+    if data:
+        token = str(data.get("token") or "")
+        if token:
+            _ACTIVE_STAGE_LEASES.discard(token)
+    try:
+        lease.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def abandon_directory_stage(staged: TransactionPaths) -> None:
+    """Leave an interrupted stage for cleanup and mark it immediately reclaimable.
+
+    ``KeyboardInterrupt`` and ``SystemExit`` leave the assembled files in place
+    for inspection, but the build is no longer active.  Rewriting the lease as
+    abandoned lets the next bounded cleanup remove it without relying on PID
+    liveness (important when the same interpreter retries).
+    """
+    if not staged.stage.exists():
+        release_stage_lease(staged)
+        return
+    data = _read_json(staged.lease) or _stage_lease_payload(staged)
+    data["abandoned"] = True
+    data["updated"] = _now()
+    _ACTIVE_STAGE_LEASES.discard(str(data.get("token") or ""))
+    try:
+        _write_json_atomic(staged.lease, data, mode=0o600)
+    except OSError:
+        # The stage is already orphaned; cleanup can still use its age/lease.
+        pass
 
 
 def discard_directory_stage(staged: TransactionPaths) -> None:
@@ -453,6 +701,7 @@ def discard_directory_stage(staged: TransactionPaths) -> None:
         _remove_path(staged.stage)
     except OSError:
         pass
+    release_stage_lease(staged)
     _cleanup_root(staged)
 
 
@@ -790,6 +1039,17 @@ def _cleanup_candidates(paths: TransactionPaths) -> Tuple[list, list]:
     return found, errors
 
 
+def _active_stage_cleanup_paths(paths: TransactionPaths, found: list) -> set:
+    """Return stage trees protected by a live build lease."""
+    active = set()
+    for kind, path in found:
+        if kind != "stage":
+            continue
+        if _stage_lease_owner(stage_lease_path(path)) == "active":
+            active.add(_cleanup_path_key(path))
+    return active
+
+
 def _cleanup_latest_quarantine_keys(
     paths: TransactionPaths, found: list
 ) -> set:
@@ -857,7 +1117,11 @@ def storage_cleanup(
         destination, paths
     )
     errors = list(scan_errors) + list(reference_errors)
-    protected = references | _cleanup_latest_quarantine_keys(paths, found)
+    protected = (
+        references
+        | _cleanup_latest_quarantine_keys(paths, found)
+        | _active_stage_cleanup_paths(paths, found)
+    )
     current = time.time() if now is None else float(now)
 
     preserved = []
@@ -944,6 +1208,254 @@ def storage_cleanup(
         max_age_days=float(max_age_days),
         max_size_bytes=max_size_bytes,
         candidates=tuple(selected),
+        preserved=tuple(preserved),
+        errors=tuple(errors),
+    )
+
+
+def _stage_lease_owner(lease: Path) -> str:
+    """Classify a stage lease as active, dead, abandoned or unknown."""
+    if lease.is_symlink():
+        return "unknown"
+    if not lease.exists():
+        return "missing"
+    data = _read_json(lease)
+    if not data:
+        return "unknown"
+    if data.get("abandoned"):
+        return "abandoned"
+    token = str(data.get("token") or "")
+    if token and token in _ACTIVE_STAGE_LEASES:
+        return "active"
+    host = str(data.get("host") or "")
+    if host and host != platform.node():
+        # A build on another host cannot be inspected safely.  Preserve it
+        # while the lease is young; age bounds an otherwise unknown orphan.
+        return "unknown"
+    try:
+        pid = int(data.get("pid") or 0)
+    except (TypeError, ValueError):
+        return "unknown"
+    if pid <= 0:
+        return "dead"
+    if not _process_alive(pid):
+        return "dead"
+    recorded_start = data.get("pid_start")
+    if recorded_start:
+        current_start = _process_start(pid)
+        if current_start is not None and str(recorded_start) != current_start:
+            return "dead"
+    return "active"
+
+
+def _stage_cleanup_entries(
+    paths: TransactionPaths,
+) -> Tuple[list, list]:
+    """Find stage directories and lease sidecars for this destination."""
+    entries = []
+    errors = []
+    root = paths.root
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        return entries, [f"transaction root is not a directory: {root}"]
+    if not root.exists():
+        return entries, errors
+    key = re.escape(paths.key)
+    stage_pattern = re.compile(rf"^{key}\.stage-([A-Za-z0-9_-]+)$")
+    lease_pattern = re.compile(rf"^{key}\.lease-([A-Za-z0-9_-]+)$")
+    try:
+        children = list(root.iterdir())
+    except OSError as exc:
+        return entries, [f"could not inspect transaction root {root}: {exc}"]
+    stages = {}
+    leases = {}
+    for child in children:
+        match = stage_pattern.fullmatch(child.name)
+        if match is not None:
+            stages[match.group(1)] = child
+            continue
+        match = lease_pattern.fullmatch(child.name)
+        if match is not None:
+            leases[match.group(1)] = child
+    for transaction_id, stage in stages.items():
+        entries.append(
+            (
+                "stage",
+                stage,
+                leases.get(transaction_id),
+            )
+        )
+    for transaction_id, lease in leases.items():
+        if transaction_id not in stages:
+            entries.append(("stage-lease", lease, lease))
+    return entries, errors
+
+
+def cleanup_orphan_stages(
+    destination: Path,
+    *,
+    max_age_days: float = STAGE_ORPHAN_MAX_AGE_DAYS,
+    max_size_bytes: int = STAGE_ORPHAN_MAX_BYTES,
+    dry_run: bool = False,
+    now: Optional[float] = None,
+) -> StageCleanupReport:
+    """Remove bounded abandoned assembly stages for *destination*.
+
+    Stages owned by a live build (including a build in another process on this
+    host) are never selected.  An explicitly abandoned stage, or one whose
+    local owner is gone, is eligible immediately.  Stages without a readable
+    lease are only selected after ``max_age_days`` so an older builder that
+    predates leases is not deleted while it is still running.  One pass is
+    capped by ``max_size_bytes``; a single stage larger than the entire cap is
+    left for a later pass rather than partially removed.
+    """
+    if (
+        isinstance(max_age_days, bool)
+        or not isinstance(max_age_days, (int, float))
+        or max_age_days <= 0
+    ):
+        raise ValueError("max_age_days must be greater than zero")
+    if (
+        isinstance(max_size_bytes, bool)
+        or not isinstance(max_size_bytes, int)
+        or max_size_bytes <= 0
+    ):
+        raise ValueError("max_size_bytes must be a positive integer")
+
+    destination = _absolute(destination)
+    paths = transaction_paths(destination)
+    entries, errors = _stage_cleanup_entries(paths)
+    references, unknown_active, reference_errors = _cleanup_references(
+        destination, paths
+    )
+    errors.extend(reference_errors)
+    current = time.time() if now is None else float(now)
+    eligible = []
+    preserved = []
+
+    for kind, path, lease in entries:
+        if path.is_symlink():
+            preserved.append(
+                StorageCleanupCandidate(
+                    path=path,
+                    kind=kind,
+                    bytes=0,
+                    age_days=0.0,
+                    selected=False,
+                    reason="symlink",
+                )
+            )
+            continue
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            errors.append(f"could not inspect orphan stage {path}: {exc}")
+            preserved.append(
+                StorageCleanupCandidate(
+                    path=path,
+                    kind=kind,
+                    bytes=0,
+                    age_days=0.0,
+                    selected=False,
+                    reason=f"could not inspect: {exc}",
+                )
+            )
+            continue
+        age_days = max(0.0, (current - info.st_mtime) / 86400.0)
+        candidate = StorageCleanupCandidate(
+            path=path,
+            kind=kind,
+            bytes=0,
+            age_days=age_days,
+            selected=False,
+        )
+        if _cleanup_path_key(path) in references:
+            preserved.append(
+                replace(candidate, reason="referenced by an active transaction")
+            )
+            continue
+        if unknown_active:
+            preserved.append(
+                replace(candidate, reason="active transaction state is unreadable")
+            )
+            continue
+        owner = _stage_lease_owner(lease) if lease is not None else "missing"
+        if owner == "active":
+            preserved.append(replace(candidate, reason="active build lease"))
+            continue
+        if owner not in ("dead", "abandoned") and age_days < max_age_days:
+            preserved.append(
+                replace(
+                    candidate,
+                    reason=f"younger than {max_age_days:g}-day age limit",
+                )
+            )
+            continue
+        # Only eligible trees are measured.  A live build's multi-gigabyte
+        # stage should not be walked by every cleanup pass.
+        try:
+            size = _cleanup_size(path)
+        except OSError as exc:
+            errors.append(f"could not measure orphan stage {path}: {exc}")
+            preserved.append(
+                replace(candidate, reason=f"could not measure: {exc}")
+            )
+            continue
+        eligible.append(replace(candidate, bytes=size))
+
+    # Dead and explicitly abandoned trees are reclaimed before merely old
+    # unleased ones, so a recent interrupted build cannot sit behind old junk.
+    priority = {}
+    for kind, path, lease in entries:
+        owner = _stage_lease_owner(lease) if lease is not None else "missing"
+        priority[_cleanup_path_key(path)] = (
+            0 if owner in ("dead", "abandoned") else 1
+        )
+    eligible.sort(
+        key=lambda item: (
+            priority.get(_cleanup_path_key(item.path), 1),
+            -item.age_days,
+            str(item.path),
+        )
+    )
+
+    selected = []
+    selected_bytes = 0
+    for candidate in eligible:
+        if selected_bytes + candidate.bytes > max_size_bytes:
+            preserved.append(replace(candidate, reason="size limit"))
+            continue
+        selected.append(replace(candidate, selected=True))
+        selected_bytes += candidate.bytes
+
+    removed = []
+    removed_bytes = 0
+    if not dry_run:
+        for candidate in selected:
+            target = candidate.path
+            try:
+                _remove_path(target)
+            except OSError as exc:
+                errors.append(f"could not remove orphan stage {target}: {exc}")
+                continue
+            lease = stage_lease_path(target)
+            try:
+                lease.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                errors.append(f"could not remove stage lease {lease}: {exc}")
+            removed.append(target)
+            removed_bytes += candidate.bytes
+
+    preserved.sort(key=lambda item: str(item.path))
+    return StageCleanupReport(
+        destination=destination,
+        dry_run=dry_run,
+        max_age_days=float(max_age_days),
+        max_size_bytes=max_size_bytes,
+        candidates=tuple(selected),
+        removed=tuple(removed),
+        removed_bytes=removed_bytes,
         preserved=tuple(preserved),
         errors=tuple(errors),
     )
@@ -1983,6 +2495,134 @@ def _stale_lock(path: Path) -> bool:
     return not _process_alive(pid)
 
 
+def _claim_process_install_lock(key: str) -> bool:
+    with _INSTALL_LOCK_GUARD:
+        if key in _HELD_INSTALL_LOCKS:
+            return False
+        _HELD_INSTALL_LOCKS.add(key)
+        return True
+
+
+def _release_process_install_lock(key: str) -> None:
+    with _INSTALL_LOCK_GUARD:
+        _HELD_INSTALL_LOCKS.discard(key)
+
+
+def _windows_install_lock_name(destination: Path) -> str:
+    identity = _path_identity(destination, windows=True)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return "Local\\OffGridInstall-" + digest
+
+
+def _acquire_windows_install_lock(destination: Path) -> Optional[Any]:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_wchar_p,
+    )
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel32.ReleaseMutex.restype = ctypes.c_bool
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_bool
+
+    handle = kernel32.CreateMutexW(
+        None, False, _windows_install_lock_name(destination)
+    )
+    if not handle:
+        raise InstallError(
+            "could not create the install lock for "
+            f"{destination}: Windows error {ctypes.get_last_error()}"
+        )
+    result = kernel32.WaitForSingleObject(handle, 0)
+    if result in (0x00000000, 0x00000080):
+        # WAIT_OBJECT_0 and WAIT_ABANDONED both grant ownership. An abandoned
+        # mutex is exactly the crashed-owner case, so it is safe to reclaim.
+        return handle
+    kernel32.CloseHandle(handle)
+    if result == 0x00000102:
+        return None
+    raise InstallError(
+        "could not acquire the install lock for "
+        f"{destination}: Windows error {ctypes.get_last_error()}"
+    )
+
+
+def _release_windows_install_lock(handle: Any) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel32.ReleaseMutex.restype = ctypes.c_bool
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    try:
+        kernel32.ReleaseMutex(handle)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _acquire_os_install_lock(paths: TransactionPaths) -> Optional[Any]:
+    """Exclusively lock the transaction root without waiting.
+
+    The lock is held by the OS for the lifetime of the handle, so a crashed
+    owner can never leave a lock that another process has to unlink. The JSON
+    sidecar remains only as diagnostics and for cross-host contention.
+    """
+    if os.name == "nt":
+        return _acquire_windows_install_lock(paths.destination)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(str(paths.root), flags)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(descriptor)
+        would_block = {errno.EACCES, errno.EAGAIN}
+        would_block.add(getattr(errno, "EWOULDBLOCK", errno.EAGAIN))
+        if exc.errno in would_block:
+            return None
+        raise InstallError(
+            f"could not lock the install root {paths.root}: {exc}"
+        ) from exc
+    return descriptor
+
+
+def _release_os_install_lock(handle: Any) -> None:
+    if os.name == "nt":
+        _release_windows_install_lock(handle)
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(handle)
+    except OSError:
+        pass
+
+
+def _lock_handle_matches_path(handle: Any, path: Path) -> bool:
+    """Return whether an acquired OS lock still names *path*.
+
+    A concurrent cleanup can remove and recreate the transaction root between
+    opening it and taking the lock. Comparing the held descriptor with the
+    path prevents two processes from locking different directory instances.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        held = os.fstat(handle)
+        current = os.stat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+
+
 @contextmanager
 def install_lock(destination: Path) -> Iterator[str]:
     """Hold the exclusive install lock for *destination*.
@@ -1990,10 +2630,12 @@ def install_lock(destination: Path) -> Iterator[str]:
     A lock left by a dead process on this host is reclaimed, including after
     its PID has been recycled. A lock from another host is treated as live
     contention because that process cannot be inspected safely; a live local
-    owner is always refused.
+    owner is always refused. The OS handle serializes same-host contenders
+    before either can inspect or reclaim the sidecar. The sidecar itself is
+    still created with O_EXCL so a host that cannot share the OS lock cannot
+    race the creation.
     """
     paths = transaction_paths(destination)
-    _ensure_root(paths)
     token = uuid.uuid4().hex
     pid = os.getpid()
     payload = {
@@ -2006,45 +2648,89 @@ def install_lock(destination: Path) -> Iterator[str]:
     pid_start = _process_start(pid)
     if pid_start is not None:
         payload["pid_start"] = pid_start
-    descriptor = -1
-    for attempt in range(2):
-        try:
-            descriptor = os.open(
-                str(paths.lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-            )
-            break
-        except FileExistsError:
-            if attempt == 0 and _stale_lock(paths.lock):
-                try:
-                    paths.lock.unlink()
-                except OSError:
-                    pass
-                continue
-            raise InstallBusy(
-                f"another install is already running for {paths.destination}; "
-                f"lock file: {paths.lock}"
-            ) from None
-    if descriptor < 0:
+
+    process_key = _path_identity(paths.lock)
+    if not _claim_process_install_lock(process_key):
         raise InstallBusy(
-            f"could not acquire the install lock for {paths.destination}"
+            f"another install is already running for {paths.destination}; "
+            f"lock file: {paths.lock}"
         )
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, sort_keys=True)
-        handle.flush()
-        os.fsync(handle.fileno())
+    handle: Optional[Any] = None
     try:
-        yield token
-    finally:
-        try:
-            current = json.loads(paths.lock.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            current = {}
-        if isinstance(current, dict) and current.get("token") == token:
+        for _attempt in range(3):
+            _ensure_root(paths)
+            handle = _acquire_os_install_lock(paths)
+            if handle is None:
+                raise InstallBusy(
+                    f"another install is already running for {paths.destination}; "
+                    f"lock file: {paths.lock}"
+                )
+            if _lock_handle_matches_path(handle, paths.root):
+                break
+            _release_os_install_lock(handle)
+            handle = None
+        if handle is None:
+            raise InstallError(
+                f"could not acquire the install lock for {paths.destination}"
+            )
+
+        if paths.lock.exists() or paths.lock.is_symlink():
+            if not _stale_lock(paths.lock):
+                raise InstallBusy(
+                    f"another install is already running for {paths.destination}; "
+                    f"lock file: {paths.lock}"
+                )
             try:
                 paths.lock.unlink()
-            except OSError:
+            except FileNotFoundError:
                 pass
-        _cleanup_root(paths)
+
+        descriptor = -1
+        for attempt in range(2):
+            try:
+                descriptor = os.open(
+                    str(paths.lock),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                break
+            except FileExistsError:
+                if attempt == 0 and _stale_lock(paths.lock):
+                    try:
+                        paths.lock.unlink()
+                    except OSError:
+                        pass
+                    continue
+                raise InstallBusy(
+                    f"another install is already running for {paths.destination}; "
+                    f"lock file: {paths.lock}"
+                ) from None
+        if descriptor < 0:
+            raise InstallError(
+                f"could not acquire the install lock for {paths.destination}"
+            )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as lock_file:
+            json.dump(payload, lock_file, sort_keys=True)
+            lock_file.flush()
+            os.fsync(lock_file.fileno())
+        yield token
+    finally:
+        if handle is not None:
+            try:
+                current = _read_json(paths.lock)
+                owned = isinstance(current, dict) and current.get("token") == token
+                if owned:
+                    try:
+                        paths.lock.unlink()
+                    except OSError:
+                        pass
+                    # Removing the root while still holding its OS handle is
+                    # safe: a late contender verifies the directory identity
+                    # after locking and retries if it opened this instance.
+                    _cleanup_root(paths)
+            finally:
+                _release_os_install_lock(handle)
+        _release_process_install_lock(process_key)
 
 
 def _remove_path(path: Path) -> None:
@@ -2398,12 +3084,34 @@ def preflight_destination(
     return destination
 
 
-def _source_manifest(
+def _ensure_requested_components(
+    source: Path, manifest: Mapping[str, Any]
+) -> None:
+    missing = install_manifest.missing_requested_components(source, manifest)
+    if missing:
+        raise InstallError(
+            "full bundle is incomplete; missing " + ", ".join(missing)
+        )
+
+
+def verify_staged_directory(
     source: Path,
     *,
     allow_missing_assets: bool = False,
-) -> Dict[str, Any]:
-    manifest_path = Path(source) / install_manifest.MANIFEST_NAME
+) -> StagedDirectoryVerification:
+    """Strictly verify an assembled directory before any destination is touched.
+
+    This is the one full pass: requested full-bundle components, every app
+    file, runtime binary and model are checked, extra files are rejected, and
+    symlinks are checked before the transaction starts.  A strict report is
+    marked complete and can be passed to :func:`install_directory` so the
+    commit does not hash the same staged assets again.
+    """
+    source = _absolute(source)
+    if not source.is_dir():
+        raise InstallError(f"bundle directory not found: {source}")
+    _validate_source_tree(source)
+    manifest_path = source / install_manifest.MANIFEST_NAME
     if not manifest_path.is_file():
         raise InstallError(
             f"bundle has no verified {install_manifest.MANIFEST_NAME}: {source}; "
@@ -2413,6 +3121,8 @@ def _source_manifest(
         manifest = install_manifest.load_manifest(manifest_path)
     except install_manifest.ManifestError as exc:
         raise InstallError(str(exc)) from exc
+    if not allow_missing_assets:
+        _ensure_requested_components(source, manifest)
     report = install_manifest.verify_manifest(
         source,
         manifest,
@@ -2424,7 +3134,12 @@ def _source_manifest(
         raise InstallError(
             "bundle manifest did not verify: " + "; ".join(report.errors)
         )
-    return manifest
+    return StagedDirectoryVerification(
+        source=source,
+        manifest=manifest,
+        report=report,
+        complete=not allow_missing_assets,
+    )
 
 
 def _same_asset(new_entry: Mapping[str, Any], old_entry: Mapping[str, Any]) -> bool:
@@ -2775,9 +3490,14 @@ def _preserve_old_state(
             _copy_file(source, target)
 
 
-def _verify_stage(stage: Path, manifest: Mapping[str, Any]) -> None:
+def _verify_stage(
+    stage: Path,
+    manifest: Mapping[str, Any],
+    *,
+    check_assets: bool = True,
+) -> None:
     report = install_manifest.verify_manifest(
-        stage, manifest, check_assets=True
+        stage, manifest, check_assets=check_assets
     )
     if not report.ok:
         raise InstallError(
@@ -2811,14 +3531,18 @@ def _run_health_command(command: list, root: Path) -> None:
 def health_check(
     root: Path,
     manifest: Mapping[str, Any],
+    *,
+    check_assets: bool = True,
 ) -> None:
     """Verify the candidate and prove its main entrypoint can start.
 
     This is deliberately a smoke check, not a full model or Studio launch: it
     imports the app or runs ``offgrid.pyz --version`` with bytecode disabled.
+    ``check_assets=False`` is used only after a strict staged-tree report has
+    already hashed the runtime and model files.
     """
     root = Path(root)
-    _verify_stage(root, manifest)
+    _verify_stage(root, manifest, check_assets=check_assets)
     for relative in set(str(value) for value in manifest.get("entrypoints", {}).values()):
         path = root.joinpath(*PurePosixPath(relative).parts)
         if not path.is_file() or path.is_symlink():
@@ -3360,12 +4084,87 @@ def _finish_recovery(paths: TransactionPaths) -> None:
     _cleanup_root(paths)
 
 
+def _load_recovery_journal(paths: TransactionPaths) -> Optional[Dict[str, Any]]:
+    """Read the recovery journal strictly, or return ``None`` if absent.
+
+    A journal that exists but cannot be understood is not the same as no
+    journal: recovery may need to move or delete paths named by it. Fail closed
+    and leave the journal in place for manual inspection.
+    """
+    journal = paths.journal
+    try:
+        raw = journal.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        if journal.is_symlink():
+            raise InstallError(
+                f"could not recover the interrupted install in {paths.destination}: "
+                f"the recovery journal at {journal} is a dangling symlink; "
+                "the journal was kept and the install was not changed"
+            ) from exc
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"could not read the recovery journal at {journal}: {exc}; "
+            "the journal was kept and the install was not changed"
+        ) from exc
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"the recovery journal at {journal} is malformed: {exc}; "
+            "the journal was kept and the install was not changed"
+        ) from exc
+    if not isinstance(data, dict):
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"the recovery journal at {journal} is malformed: expected a JSON "
+            f"object, got {type(data).__name__}; the journal was kept and the "
+            "install was not changed"
+        )
+    schema = data.get("schema")
+    if schema != JOURNAL_SCHEMA:
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"the recovery journal at {journal} has unsupported schema "
+            f"{schema!r}; expected {JOURNAL_SCHEMA!r}; the journal was kept "
+            "and the install was not changed"
+        )
+    kind = data.get("kind")
+    if kind in (None, "", "directory"):
+        allowed_statuses = _DIRECTORY_RECOVERY_STATUSES
+    elif kind == "file":
+        allowed_statuses = _FILE_RECOVERY_STATUSES
+    else:
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"the recovery journal at {journal} is malformed: unsupported "
+            f"kind {kind!r}; the journal was kept and the install was not "
+            "changed"
+        )
+    status = data.get("status")
+    if status not in allowed_statuses:
+        raise InstallError(
+            f"could not recover the interrupted install in {paths.destination}: "
+            f"the recovery journal at {journal} is malformed: unsupported "
+            f"status {status!r} for kind {kind or 'directory'!r}; the journal "
+            "was kept and the install was not changed"
+        )
+    return data
+
+
 def _recover_interrupted(destination: Path) -> None:
-    """Resolve a journal left by a crash before starting a new transaction."""
+    """Resolve a journal left by a crash before starting a new transaction.
+
+    A journal that exists but is unreadable, malformed, or from an unsupported
+    schema stops recovery. Guessing could delete or restore the wrong tree;
+    the journal is deliberately left untouched for inspection.
+    """
     destination = _absolute(destination)
     paths = transaction_paths(destination)
-    journal = _read_json(paths.journal)
-    if not journal:
+    journal = _load_recovery_journal(paths)
+    if journal is None:
         return
     journal = _validated_recovery_journal(destination, paths, journal)
     if journal.get("kind") == "file":
@@ -3529,6 +4328,7 @@ def _rollback_directory(
         if restore.exists() and not paths.destination.exists():
             os.replace(restore, paths.destination)
         _remove_path(paths.stage)
+        release_stage_lease(paths)
         if recovery_bundle:
             _remove_recovery_bundle(recovery_bundle)
         if paths.journal.exists():
@@ -3559,13 +4359,17 @@ def install_directory(
     safety_snapshot: bool = False,
     install_id: Optional[str] = None,
     staged: Optional[TransactionPaths] = None,
+    verified: Optional[StagedDirectoryVerification] = None,
 ) -> InstallReport:
     """Install a verified bundle directory transactionally.
 
     When ``staged`` comes from :func:`prepare_directory_stage`, ``source`` and
     ``destination`` must be that stage and its destination.  The already
     assembled stage is verified with full asset hashes and activated in place
-    instead of being copied into a second staging tree.
+    instead of being copied into a second staging tree.  Pass an explicit,
+    strict report from :func:`verify_staged_directory` for a complete staged
+    tree to reuse its asset hashes; incomplete reports and internally produced
+    verification are checked again before commit.
     """
     source = _absolute(source)
     destination = _absolute(destination)
@@ -3581,10 +4385,24 @@ def install_directory(
     if source in destination.parents or destination in source.parents:
         raise InstallError("source and destination must not contain each other")
     _validate_source_tree(source)
-    manifest = _source_manifest(
-        source,
-        allow_missing_assets=allow_missing_assets,
-    )
+    reuse_asset_hashes = False
+    if verified is not None:
+        if _absolute(verified.source) != source:
+            raise InstallError(
+                "staged verification is for a different source directory"
+            )
+        if not verified.report.ok:
+            raise InstallError(
+                "staged install did not verify: "
+                + "; ".join(verified.report.errors)
+            )
+        reuse_asset_hashes = staged is not None and verified.complete
+    else:
+        verified = verify_staged_directory(
+            source,
+            allow_missing_assets=allow_missing_assets,
+        )
+    manifest = verified.manifest
     manifest_digest = install_manifest.manifest_digest(manifest)
     if dry_run:
         preflight_destination(destination, force=force, kind="directory")
@@ -3618,7 +4436,9 @@ def install_directory(
         txid = paths.transaction_id
         current = _inspect_current_install(destination, paths, "directory")
         checker = health_checker or (
-            lambda root, current: health_check(root, current)
+            lambda root, current: health_check(
+                root, current, check_assets=not reuse_asset_hashes
+            )
         )
         activated = False
         recovery = SnapshotResult()
@@ -3653,7 +4473,11 @@ def install_directory(
                 preserve_unlisted_assets=preserve_unlisted_assets,
             )
             install_manifest.write_manifest(paths.stage, manifest)
-            _verify_stage(paths.stage, manifest)
+            _verify_stage(
+                paths.stage,
+                manifest,
+                check_assets=not reuse_asset_hashes,
+            )
             result = checker(paths.stage, manifest)
             if result is False:
                 raise HealthCheckError("candidate install health check returned false")
@@ -3787,6 +4611,7 @@ def install_directory(
                 # transaction to finish cleanup rather than rolling back a
                 # healthy tree over a permission error in a hidden directory.
                 pass
+            release_stage_lease(paths)
             _cleanup_root(paths)
             return InstallReport(
                 destination=destination,

@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import platform
 import shutil
@@ -99,6 +100,32 @@ def load_state(destination):
     )
 
 
+def _race_stale_install_lock(
+    destination, wait_for_first, first_ready, second_done, results
+):
+    """Try to reclaim a poisoned lock while another process holds it."""
+
+    def stale(_path):
+        if wait_for_first:
+            first_ready.wait(20)
+        return True
+
+    try:
+        with patch.object(install_transaction, "_stale_lock", side_effect=stale):
+            with install_transaction.install_lock(Path(destination)) as token:
+                results.put(("acquired", os.getpid(), token))
+                if not wait_for_first:
+                    first_ready.set()
+                    second_done.wait(20)
+    except install_transaction.InstallBusy:
+        results.put(("busy", os.getpid(), ""))
+    except BaseException as exc:
+        results.put(("error", os.getpid(), repr(exc)))
+    finally:
+        if wait_for_first:
+            second_done.set()
+
+
 class TransactionalInstallTests(unittest.TestCase):
     def test_first_install_commits_manifest_and_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,6 +193,64 @@ class TransactionalInstallTests(unittest.TestCase):
                 inode,
             )
             self.assertFalse(staged.stage.exists())
+
+    def test_staged_install_only_reuses_an_explicit_complete_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            device = root / "device"
+            device.mkdir()
+            real_verify_stage = install_transaction._verify_stage
+
+            def install(name, *, explicit, allow_missing=False):
+                source = make_bundle(root / name, model=True)
+                destination = device / name
+                staged = install_transaction.prepare_directory_stage(destination)
+                shutil.copytree(source, staged.stage, dirs_exist_ok=True)
+                verification = (
+                    install_transaction.verify_staged_directory(
+                        staged.stage,
+                        allow_missing_assets=allow_missing,
+                    )
+                    if explicit
+                    else None
+                )
+                asset_checks = []
+
+                def capture(stage, manifest, *, check_assets=True):
+                    asset_checks.append(check_assets)
+                    return real_verify_stage(
+                        stage, manifest, check_assets=check_assets
+                    )
+
+                with patch.object(
+                    install_transaction,
+                    "_verify_stage",
+                    side_effect=capture,
+                ):
+                    report = install_transaction.install_directory(
+                        staged.stage,
+                        destination,
+                        staged=staged,
+                        verified=verification,
+                        health_checker=lambda candidate, manifest: True,
+                    )
+
+                self.assertTrue(report.committed)
+                return verification, asset_checks
+
+            strict, strict_checks = install("strict", explicit=True)
+            self.assertTrue(strict.complete)
+            self.assertEqual(strict_checks, [False])
+
+            ordinary, ordinary_checks = install("ordinary", explicit=False)
+            self.assertIsNone(ordinary)
+            self.assertEqual(ordinary_checks, [True])
+
+            incomplete, incomplete_checks = install(
+                "incomplete", explicit=True, allow_missing=True
+            )
+            self.assertFalse(incomplete.complete)
+            self.assertEqual(incomplete_checks, [True])
 
     def test_existing_install_requires_force_and_records_previous_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -979,6 +1064,63 @@ class TransactionalInstallTests(unittest.TestCase):
                 with self.assertRaises(install_transaction.InstallBusy):
                     install_transaction.install_directory(source, destination)
 
+    def test_concurrent_stale_lock_reclamation_does_not_steal_a_fresh_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "device" / "offgrid"
+            paths = install_transaction.transaction_paths(destination)
+            paths.root.mkdir(parents=True)
+            paths.lock.write_text(
+                json.dumps(
+                    {
+                        "pid": 0,
+                        "host": platform.node(),
+                        "destination": str(destination),
+                        "token": "stale-token",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            context = multiprocessing.get_context("spawn")
+            results = context.Queue()
+            first_ready = context.Event()
+            second_done = context.Event()
+            first = context.Process(
+                target=_race_stale_install_lock,
+                args=(str(destination), False, first_ready, second_done, results),
+            )
+            second = context.Process(
+                target=_race_stale_install_lock,
+                args=(str(destination), True, first_ready, second_done, results),
+            )
+            messages = []
+            try:
+                first.start()
+                self.assertTrue(
+                    first_ready.wait(20),
+                    "the first contender did not acquire the stale lock",
+                )
+                second.start()
+                messages = [results.get(timeout=20) for _ in range(2)]
+            finally:
+                for process in (first, second):
+                    if process.pid is None:
+                        continue
+                    process.join(timeout=20)
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=5)
+                results.close()
+                results.join_thread()
+
+            acquired = [message for message in messages if message[0] == "acquired"]
+            busy = [message for message in messages if message[0] == "busy"]
+            errors = [message for message in messages if message[0] == "error"]
+            self.assertEqual(len(acquired), 1, messages)
+            self.assertEqual(len(busy), 1, messages)
+            self.assertEqual(errors, [], messages)
+            self.assertFalse(paths.lock.exists())
+
     def test_install_lock_refuses_a_foreign_host(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1102,6 +1244,117 @@ class TransactionalInstallTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
+
+    def test_windows_destination_identity_ignores_case_separators_and_dot_segments(self):
+        variants = (
+            Path(r"C:\OffGrid\Device"),
+            Path(r"c:\offgrid\device"),
+            Path("C:/OffGrid/Device/"),
+            Path(r"C:\OffGrid\.\Device"),
+            Path(r"C:\OffGrid\Scratch\..\Device"),
+            Path(r"C:\OffGrid\\Device"),
+            Path(r"\\?\C:\OffGrid\Device"),
+            Path(r"\\.\C:\OffGrid\Device"),
+        )
+
+        identities = {
+            install_transaction._path_identity(variant, windows=True)
+            for variant in variants
+        }
+        keys = {
+            install_transaction._key(variant, windows=True)
+            for variant in variants
+        }
+        lock_names = {
+            install_transaction._windows_install_lock_name(variant)
+            for variant in variants
+        }
+
+        self.assertEqual(identities, {r"c:\offgrid\device"})
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(len(lock_names), 1)
+
+    def test_windows_unc_destination_identity_ignores_spelling(self):
+        variants = (
+            Path(r"\\Server\Share\Device"),
+            Path("//server/share/device"),
+            Path(r"\\?\UNC\Server\Share\Device"),
+            Path(r"\\?\unc\Server\Share\Device"),
+            Path("//?/unc/Server/Share/Device"),
+        )
+
+        identities = {
+            install_transaction._path_identity(variant, windows=True)
+            for variant in variants
+        }
+        keys = {
+            install_transaction._key(variant, windows=True)
+            for variant in variants
+        }
+
+        self.assertEqual(identities, {r"\\server\share\device"})
+        self.assertEqual(len(keys), 1)
+
+    def test_posix_destination_identity_stays_case_sensitive(self):
+        upper = install_transaction._path_identity(
+            Path("/srv/OffGrid"), windows=False
+        )
+        lower = install_transaction._path_identity(
+            Path("/srv/offgrid"), windows=False
+        )
+
+        self.assertNotEqual(upper, lower)
+        self.assertNotEqual(
+            install_transaction._key(Path("/srv/OffGrid"), windows=False),
+            install_transaction._key(Path("/srv/offgrid"), windows=False),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem semantics")
+    def test_windows_destination_spellings_share_transaction_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "Device" / "OffGrid"
+            destination.parent.mkdir(parents=True)
+            spellings = (
+                destination,
+                Path(tmp) / "dEvIcE" / "OffGrid",
+                Path(str(destination).replace("\\", "/")),
+                Path(
+                    str(
+                        destination.parent
+                        / "Scratch"
+                        / ".."
+                        / destination.name
+                    )
+                ),
+                Path("\\\\?\\" + str(destination)),
+            )
+
+            paths = [
+                install_transaction.transaction_paths(spelling)
+                for spelling in spellings
+            ]
+            first = paths[0]
+            for variant in paths[1:]:
+                self.assertEqual(variant.key, first.key)
+                self.assertEqual(variant.root, first.root)
+                self.assertEqual(variant.lock, first.lock)
+                self.assertEqual(variant.journal, first.journal)
+                self.assertEqual(variant.state_dir, first.state_dir)
+                self.assertEqual(variant.recovery, first.recovery)
+
+            self.assertEqual(
+                {
+                    install_transaction.recovery_archive_path(spelling, 1)
+                    for spelling in spellings
+                },
+                {install_transaction.recovery_archive_path(spellings[0], 1)},
+            )
+
+            with install_transaction.install_lock(spellings[0]):
+                for spelling in spellings[1:]:
+                    with self.assertRaises(install_transaction.InstallBusy):
+                        with install_transaction.install_lock(spelling):
+                            pass
 
     def test_recycled_local_pid_does_not_keep_a_dead_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1264,6 +1517,158 @@ class TransactionalInstallTests(unittest.TestCase):
                 install_transaction._recover_interrupted(destination)
 
             self.assertTrue(paths.journal.is_file())
+
+    def test_recovery_fails_closed_for_a_malformed_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "device" / "offgrid"
+            destination.mkdir(parents=True)
+            keep = destination / "keep.txt"
+            keep.write_text("current install\n", encoding="utf-8")
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+            original = b'{"schema":'
+            paths.journal.write_bytes(original)
+
+            with self.assertRaisesRegex(
+                install_transaction.InstallError, "is malformed"
+            ) as caught:
+                install_transaction._recover_interrupted(destination)
+
+            self.assertIn("journal was kept", str(caught.exception))
+            self.assertEqual(paths.journal.read_bytes(), original)
+            self.assertEqual(keep.read_text(encoding="utf-8"), "current install\n")
+
+    def test_recovery_fails_closed_when_the_journal_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "device" / "offgrid"
+            destination.mkdir(parents=True)
+            keep = destination / "keep.txt"
+            keep.write_text("current install\n", encoding="utf-8")
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+            original = json.dumps(
+                {
+                    "schema": install_transaction.JOURNAL_SCHEMA,
+                    "transaction_id": "crashed",
+                    "status": "prepared",
+                    "kind": "directory",
+                    "destination": str(destination),
+                }
+            ).encode("utf-8")
+            paths.journal.write_bytes(original)
+
+            with patch.object(
+                Path, "read_text", side_effect=OSError("permission denied")
+            ):
+                with self.assertRaisesRegex(
+                    install_transaction.InstallError,
+                    "could not read the recovery journal",
+                ) as caught:
+                    install_transaction._recover_interrupted(destination)
+
+            self.assertIn("journal was kept", str(caught.exception))
+            self.assertEqual(paths.journal.read_bytes(), original)
+            self.assertEqual(keep.read_text(encoding="utf-8"), "current install\n")
+
+    def test_recovery_fails_closed_for_a_non_object_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "device" / "offgrid"
+            destination.mkdir(parents=True)
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+            original = b"[]"
+            paths.journal.write_bytes(original)
+
+            with self.assertRaisesRegex(
+                install_transaction.InstallError, "expected a JSON object"
+            ):
+                install_transaction._recover_interrupted(destination)
+
+            self.assertEqual(paths.journal.read_bytes(), original)
+
+    def test_recovery_fails_closed_for_an_unsupported_journal_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "device" / "offgrid"
+            destination.mkdir(parents=True)
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+
+            for payload in (
+                {"schema": "offgrid.install-transaction/999"},
+                {},
+            ):
+                with self.subTest(payload=payload):
+                    original = json.dumps(payload).encode("utf-8")
+                    paths.journal.write_bytes(original)
+                    with self.assertRaisesRegex(
+                        install_transaction.InstallError, "unsupported schema"
+                    ) as caught:
+                        install_transaction._recover_interrupted(destination)
+                    self.assertIn("journal was kept", str(caught.exception))
+                    self.assertEqual(paths.journal.read_bytes(), original)
+
+    def test_recovery_fails_closed_for_a_malformed_journal_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = root / "device" / "offgrid"
+            destination.mkdir(parents=True)
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+
+            cases = (
+                ({"schema": install_transaction.JOURNAL_SCHEMA}, "status"),
+                (
+                    {
+                        "schema": install_transaction.JOURNAL_SCHEMA,
+                        "status": "future_status",
+                    },
+                    "status",
+                ),
+                (
+                    {
+                        "schema": install_transaction.JOURNAL_SCHEMA,
+                        "status": "prepared",
+                        "kind": "future_kind",
+                    },
+                    "kind",
+                ),
+            )
+            for payload, field in cases:
+                with self.subTest(payload=payload):
+                    original = json.dumps(payload).encode("utf-8")
+                    paths.journal.write_bytes(original)
+                    with self.assertRaisesRegex(
+                        install_transaction.InstallError,
+                        f"unsupported {field}",
+                    ) as caught:
+                        install_transaction._recover_interrupted(destination)
+                    self.assertIn("journal was kept", str(caught.exception))
+                    self.assertEqual(paths.journal.read_bytes(), original)
+
+    def test_install_directory_stops_on_a_malformed_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = make_bundle(root / "src")
+            destination = root / "device" / source.name
+            destination.mkdir(parents=True)
+            keep = destination / "keep.txt"
+            keep.write_text("current install\n", encoding="utf-8")
+            paths = install_transaction.transaction_paths(destination, "crashed")
+            paths.root.mkdir(parents=True)
+            original = b"{not json"
+            paths.journal.write_bytes(original)
+
+            with self.assertRaisesRegex(
+                install_transaction.InstallError, "is malformed"
+            ):
+                install_transaction.install_directory(source, destination)
+
+            self.assertEqual(paths.journal.read_bytes(), original)
+            self.assertEqual(keep.read_text(encoding="utf-8"), "current install\n")
 
     def test_interrupted_swap_is_recovered_before_the_next_install(self):
         with tempfile.TemporaryDirectory() as tmp:

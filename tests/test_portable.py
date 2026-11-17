@@ -1,5 +1,7 @@
 import hashlib
+import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,7 +17,7 @@ from offgrid import install_manifest, portable
 from offgrid.cli import main
 
 
-def make_full_bundle(root, name="offgrid-usb"):
+def make_full_bundle(root, name="offgrid-usb", requested_components=None):
     bundle = root / name
     (bundle / "offgrid").mkdir(parents=True)
     (bundle / "offgrid" / "__init__.py").write_text(
@@ -28,7 +30,10 @@ def make_full_bundle(root, name="offgrid-usb"):
         (bundle / launcher).write_text("# launcher\n", encoding="utf-8")
     (bundle / "config.json").write_text("{}\n", encoding="utf-8")
     manifest = install_manifest.build_manifest(
-        bundle, artifact_kind="full", platform="any"
+        bundle,
+        artifact_kind="full",
+        platform="any",
+        requested_components=requested_components,
     )
     install_manifest.write_manifest(bundle, manifest)
     return bundle
@@ -55,6 +60,8 @@ class PortableBuildTests(unittest.TestCase):
                 f"{prefix}/offgrid/fullbundle.py",
                 f"{prefix}/launch/offgrid.sh",
                 f"{prefix}/scripts/setup_usb.py",
+                f"{prefix}/scripts/windows_diagnostics.ps1",
+                f"{prefix}/scripts/windows_diagnostics.bat",
             ):
                 self.assertIn(name, names)
 
@@ -66,6 +73,52 @@ class PortableBuildTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("offgrid", proc.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "execute bits are POSIX metadata")
+    def test_portable_zip_ends_with_a_verified_install_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle, _ = portable.build_distribution(root / "offgrid.zip")
+            prefix = portable.BUNDLE_PREFIX
+            manifest_name = f"{prefix}/{install_manifest.MANIFEST_NAME}"
+
+            with zipfile.ZipFile(bundle) as archive:
+                names = archive.namelist()
+                self.assertEqual(names[-1], manifest_name)
+                manifest = install_manifest.parse_manifest(
+                    archive.read(manifest_name)
+                )
+
+            self.assertEqual(manifest["artifact"]["kind"], "portable")
+            self.assertEqual(manifest["artifact"]["platform"], "any")
+            self.assertEqual(manifest["entrypoints"]["app"], "offgrid.pyz")
+            files = {entry["path"] for entry in manifest["files"]}
+            self.assertIn("offgrid.pyz", files)
+            self.assertIn("offgrid/cli.py", files)
+            self.assertEqual(manifest["user_state"], [])
+
+            report = install_manifest.verify_zip(bundle)
+            self.assertTrue(report.ok, report.errors)
+            self.assertEqual(report.checked_files, manifest["totals"]["files"])
+
+    def test_portable_zip_stores_executable_bits_for_launchers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle, _ = portable.build_distribution(Path(tmp) / "offgrid.zip")
+            prefix = portable.BUNDLE_PREFIX
+            with zipfile.ZipFile(bundle) as archive:
+                for relative in (
+                    "OffGrid.sh",
+                    "OffGrid.command",
+                    "launch/offgrid.sh",
+                    "launch/offgrid.command",
+                    "offgrid.pyz",
+                ):
+                    info = archive.getinfo(f"{prefix}/{relative}")
+                    mode = info.external_attr >> 16
+                    self.assertTrue(
+                        mode & stat.S_IXUSR,
+                        f"{relative} is not executable in the zip",
+                    )
 
     def test_cli_can_build_the_downloadable_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -88,6 +141,98 @@ class PortableBuildTests(unittest.TestCase):
             self.assertTrue(target.with_suffix(".pyz").is_file())
 
 
+class PortableReproducibilityTests(unittest.TestCase):
+    def test_build_is_byte_identical_with_source_date_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(
+                os.environ,
+                {"SOURCE_DATE_EPOCH": "1700000000"},
+                clear=False,
+            ):
+                first_zip, first_pyz = portable.build_distribution(
+                    root / "first.zip"
+                )
+                second_zip, second_pyz = portable.build_distribution(
+                    root / "second.zip"
+                )
+
+            self.assertEqual(first_zip.read_bytes(), second_zip.read_bytes())
+            self.assertEqual(first_pyz.read_bytes(), second_pyz.read_bytes())
+
+            manifest_name = (
+                f"{portable.BUNDLE_PREFIX}/{install_manifest.MANIFEST_NAME}"
+            )
+            with zipfile.ZipFile(first_zip) as archive:
+                names = archive.namelist()
+                self.assertEqual(names[-1], manifest_name)
+                manifest = install_manifest.parse_manifest(
+                    archive.read(manifest_name)
+                )
+                self.assertEqual(
+                    manifest["artifact"]["created"],
+                    "2023-11-14T22:13:20Z",
+                )
+                files = {
+                    entry["path"]: entry for entry in manifest["files"]
+                }
+                for info in archive.infolist():
+                    self.assertEqual(info.date_time, portable.ZIP_TIMESTAMP)
+                    self.assertEqual(
+                        info.create_system, portable.ZIP_CREATE_SYSTEM
+                    )
+                    self.assertEqual(
+                        info.compress_type, zipfile.ZIP_STORED
+                    )
+                    relative = info.filename.split("/", 1)[1]
+                    expected = (
+                        portable.ZIP_FILE_MODE
+                        if relative == install_manifest.MANIFEST_NAME
+                        else (
+                            portable.ZIP_EXECUTABLE_MODE
+                            if files[relative]["executable"]
+                            else portable.ZIP_FILE_MODE
+                        )
+                    )
+                    self.assertEqual(
+                        (info.external_attr >> 16) & 0o777,
+                        expected,
+                        relative,
+                    )
+
+            with zipfile.ZipFile(first_pyz) as archive:
+                self.assertIn("__main__.py", archive.namelist())
+                for info in archive.infolist():
+                    self.assertEqual(info.date_time, portable.ZIP_TIMESTAMP)
+                    self.assertEqual(
+                        info.create_system, portable.ZIP_CREATE_SYSTEM
+                    )
+                    self.assertEqual(
+                        info.compress_type, zipfile.ZIP_STORED
+                    )
+                    self.assertEqual(
+                        (info.external_attr >> 16) & 0o777,
+                        portable.ZIP_FILE_MODE,
+                        info.filename,
+                    )
+
+    def test_invalid_source_date_epoch_fails_before_building(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "bad.zip"
+            with patch.dict(
+                os.environ,
+                {"SOURCE_DATE_EPOCH": "not-a-number"},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(
+                    portable.PortableError, "SOURCE_DATE_EPOCH"
+                ):
+                    portable.build_distribution(target)
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_suffix(".pyz").exists())
+
+
 class PortableInstallTests(unittest.TestCase):
     def test_install_unpacks_into_a_device_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +246,18 @@ class PortableInstallTests(unittest.TestCase):
             self.assertTrue((destination / "offgrid.pyz").is_file())
             self.assertTrue((destination / "README-FIRST.txt").is_file())
             self.assertTrue((destination / "OffGrid.sh").is_file())
+            state = json.loads(
+                (destination / "install-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["status"], "committed")
+            self.assertEqual(
+                state["manifest_digest"],
+                install_manifest.manifest_digest(
+                    install_manifest.load_manifest(
+                        destination / install_manifest.MANIFEST_NAME
+                    )
+                ),
+            )
             if os.name == "posix":
                 self.assertTrue(os.access(destination / "OffGrid.sh", os.X_OK))
                 self.assertTrue(os.access(destination / "launch" / "offgrid.sh", os.X_OK))
@@ -154,6 +311,68 @@ class PortableInstallTests(unittest.TestCase):
             (bundle / "config.json").write_text('{"offline": true}\n', encoding="utf-8")
             portable.install_bundle(bundle, device, force=True)
             self.assertIn("offline", (destination / "config.json").read_text(encoding="utf-8"))
+
+    def test_install_refuses_missing_requested_runtimes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = make_full_bundle(
+                root,
+                requested_components={
+                    "python": True,
+                    "llama": True,
+                    "model": False,
+                },
+            )
+            device = root / "device"
+            device.mkdir()
+
+            with self.assertRaises(portable.PortableError) as raised:
+                portable.install_bundle(bundle, device)
+
+            message = str(raised.exception)
+            self.assertIn("full bundle is incomplete", message)
+            self.assertIn("portable Python", message)
+            self.assertIn("llama.cpp", message)
+            self.assertFalse((device / bundle.name).exists())
+
+    def test_install_refuses_a_missing_requested_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = make_full_bundle(
+                root,
+                requested_components={
+                    "python": False,
+                    "llama": False,
+                    "model": True,
+                },
+            )
+            device = root / "device"
+            device.mkdir()
+
+            with self.assertRaises(portable.PortableError) as raised:
+                portable.install_bundle(bundle, device)
+
+            self.assertIn("the GGUF model", str(raised.exception))
+            self.assertFalse((device / bundle.name).exists())
+
+    def test_install_allows_components_that_were_not_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = make_full_bundle(
+                root,
+                requested_components={
+                    "python": False,
+                    "llama": False,
+                    "model": False,
+                },
+            )
+            device = root / "device"
+            device.mkdir()
+
+            destination = portable.install_bundle(bundle, device)
+
+            self.assertEqual(destination, device / bundle.name)
+            self.assertTrue((destination / "offgrid" / "cli.py").is_file())
 
     def test_install_can_dry_run_and_rejects_an_invalid_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
