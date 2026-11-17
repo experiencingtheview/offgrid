@@ -536,7 +536,7 @@ jobs:
   badge:
     name: Publish public CI status
     if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop, windows_launcher, windows_easy_bootstrap, secret-scan]
+    needs: [test, package, platform-smoke, windows_desktop, macos_desktop, linux_desktop, windows_launcher, windows_process_times, windows_easy_bootstrap, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -552,10 +552,11 @@ jobs:
           MACOS_DESKTOP_RESULT: ${{ needs.macos_desktop.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
           WINDOWS_LAUNCHER_RESULT: ${{ needs.windows_launcher.result }}
+          WINDOWS_PROCESS_TIMES_RESULT: ${{ needs.windows_process_times.result }}
           WINDOWS_EASY_RESULT: ${{ needs.windows_easy_bootstrap.result }}
           SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
         run: |
-          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ] && [ "$WINDOWS_LAUNCHER_RESULT" = "success" ] && [ "$WINDOWS_EASY_RESULT" = "success" ] && [ "$SECRET_SCAN_RESULT" = "success" ]; then
+          if [ "$TEST_RESULT" = "success" ] && [ "$PACKAGE_RESULT" = "success" ] && [ "$PLATFORM_RESULT" = "success" ] && [ "$WINDOWS_DESKTOP_RESULT" = "success" ] && [ "$MACOS_DESKTOP_RESULT" = "success" ] && [ "$LINUX_DESKTOP_RESULT" = "success" ] && [ "$WINDOWS_LAUNCHER_RESULT" = "success" ] && [ "$WINDOWS_PROCESS_TIMES_RESULT" = "success" ] && [ "$WINDOWS_EASY_RESULT" = "success" ] && [ "$SECRET_SCAN_RESULT" = "success" ]; then
             result=passing
           else
             result=failing

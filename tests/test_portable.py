@@ -11,17 +11,26 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from offgrid import portable
+from offgrid import install_manifest, portable
 from offgrid.cli import main
 
 
 def make_full_bundle(root, name="offgrid-usb"):
     bundle = root / name
     (bundle / "offgrid").mkdir(parents=True)
+    (bundle / "offgrid" / "__init__.py").write_text(
+        '__version__ = "0.1.0"\n', encoding="utf-8"
+    )
     (bundle / "offgrid" / "cli.py").write_text("# source\n", encoding="utf-8")
     (bundle / "launch").mkdir()
     (bundle / "launch" / "offgrid.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    for launcher in ("OffGrid.sh", "OffGrid.command", "OffGrid.bat"):
+        (bundle / launcher).write_text("# launcher\n", encoding="utf-8")
     (bundle / "config.json").write_text("{}\n", encoding="utf-8")
+    manifest = install_manifest.build_manifest(
+        bundle, artifact_kind="full", platform="any"
+    )
+    install_manifest.write_manifest(bundle, manifest)
     return bundle
 
 
